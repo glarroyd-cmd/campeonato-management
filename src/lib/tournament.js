@@ -242,16 +242,19 @@ export function makeInitialState(formatId = 'wc2026') {
     tournamentName: 'Novo torneio',
     player1Name: 'Jogador 1',
     player2Name: 'Jogador 2',
+    player1Color: '#06b6d4', // cyan-500 default
+    player2Color: '#f59e0b', // amber-500 default
     formatId,
     rules: defaultRules(),
     setupComplete: false,
     rulesComplete: false,
     teamsComplete: false,
     knockoutGenerated: false,
-    knockoutSeedingMap: null, // se random, mapeia slot → teamId customizado
+    knockoutSeedingMap: null,
     groups: format.hasGroups ? cloneGroups(format.initialGroups) : null,
     koTeams: !format.hasGroups ? cloneKoTeams(format.initialKoTeams) : null,
     matches: [],
+    teamRosters: {}, // { teamId: [playerName, ...] } — escalação persistente
   };
 }
 
