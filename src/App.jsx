@@ -7,7 +7,7 @@ import {
   Link2, LogOut, Copy, Home as HomeIcon, ArrowUp, ArrowDown,
   Settings2, Shuffle, Crown, Clock, Zap,
 } from 'lucide-react';
-import { supabase, clientId } from './lib/supabase.js';
+import { supabase, clientId, supabaseReady, supabaseConfig } from './lib/supabase.js';
 import {
   getLocalHistory, rememberTournament, forgetTournament,
 } from './lib/localHistory.js';
@@ -16,8 +16,8 @@ import {
   CARD_RULE_LABELS, DEFAULT_TIEBREAKERS,
   makeInitialState, makeGroupMatches, makeKnockoutMatches,
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
-  autoFillSameOwnerGroupMatches, getMatchOutcome,
-  getAllTeams, getTeamById, computePlayerStats,
+  autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
+  getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -111,6 +111,20 @@ function OwnerBadge({ owner, p1Name, p2Name }) {
   return <Pill color="amber">{p2Name}</Pill>;
 }
 
+/* Pequeno tag colorido com nome do dono (substitui as bolinhas) */
+function OwnerTag({ owner, p1Name, p2Name, size = 'sm' }) {
+  if (!owner) return null;
+  const name = owner === 'p1' ? p1Name : p2Name;
+  const short = (name || '').slice(0, 8);
+  const baseColors = owner === 'p1'
+    ? 'bg-cyan-500 text-slate-950'
+    : 'bg-amber-500 text-slate-950';
+  const sizeCls = size === 'xs'
+    ? 'text-[9px] px-1 py-0 leading-tight'
+    : 'text-[10px] px-1.5 py-0.5 leading-tight';
+  return <span className={cls('inline-block rounded font-black tracking-tight', baseColors, sizeCls)}>{short}</span>;
+}
+
 /* ============================================================
    APP — Componente raiz
    ============================================================ */
@@ -190,7 +204,18 @@ export default function App() {
   }, [code]);
 
   const update = useCallback((partial) => setState((prev) => prev ? ({ ...prev, ...partial }) : prev), []);
-  const updateMatches = useCallback((newMatches) => setState((prev) => prev ? ({ ...prev, matches: newMatches }) : prev), []);
+  const updateMatches = useCallback((newMatches) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      let intermediate = { ...prev, matches: newMatches };
+      /* 1. Recalcula seeding do KO baseado nas standings atuais (só pra slots não jogados) */
+      const { matches: afterSeeding } = recalcKnockoutSeeding(intermediate);
+      intermediate = { ...intermediate, matches: afterSeeding };
+      /* 2. Propaga vencedores no KO */
+      const { matches: afterPropagation } = propagateKnockoutWinners(intermediate.matches);
+      return { ...intermediate, matches: afterPropagation };
+    });
+  }, []);
 
   const leave = useCallback(() => {
     setCode(null);
@@ -871,14 +896,16 @@ function TeamsSetupView({ state, update, updateMatches, code, onLeave }) {
   const [editing, setEditing] = useState(null); // teamId em edição
 
   const handleFinish = () => {
-    /* Gera as matches da fase de grupos (se aplicável) */
-    let matches = [];
+    /* Gera as matches da fase de grupos (se aplicável) + já cria a chave do mata-mata
+       (com slots vazios — vão sendo preenchidos conforme jogos vão acontecendo) */
+    let groupMatches = [];
     if (format.hasGroups) {
-      matches = makeGroupMatches(state.groups, state.rules);
+      groupMatches = makeGroupMatches(state.groups, state.rules);
     }
-    /* Setup terminado — não geramos mata-mata ainda */
-    update({ teamsComplete: true });
-    updateMatches(matches);
+    const tempState = { ...state, matches: groupMatches, teamsComplete: true };
+    const koMatches = makeKnockoutMatches(tempState);
+    update({ teamsComplete: true, knockoutGenerated: true });
+    updateMatches([...groupMatches, ...koMatches]);
   };
 
   if (format.hasGroups) {
@@ -1067,7 +1094,7 @@ function StandingTable({ rows, state }) {
         <tr>
           <th className="text-left font-medium pb-1">#</th>
           <th className="text-left font-medium pb-1">Time</th>
-          <th className="font-medium pb-1 px-1">Dono</th>
+          <th className="text-left font-medium pb-1 px-1">Dono</th>
           <th className="font-medium pb-1 px-1">P</th>
           <th className="font-medium pb-1 px-1">V</th>
           <th className="font-medium pb-1 px-1">E</th>
@@ -1081,9 +1108,7 @@ function StandingTable({ rows, state }) {
           <tr key={r.id} className={cls('border-t border-slate-800', i < 2 && 'text-lime-300', i === 2 && 'text-yellow-300')}>
             <td className="py-1">{i + 1}</td>
             <td className="py-1"><span className="mr-1">{r.flag}</span>{r.name}</td>
-            <td className="text-center py-1">
-              {r.owner && <span className={cls('inline-block w-3 h-3 rounded-full', r.owner === 'p1' ? 'bg-cyan-400' : 'bg-amber-400')} />}
-            </td>
+            <td className="py-1 px-1"><OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" /></td>
             <td className="text-center py-1 tabular-nums">{r.P}</td>
             <td className="text-center py-1 tabular-nums">{r.V}</td>
             <td className="text-center py-1 tabular-nums">{r.E}</td>
@@ -1106,24 +1131,112 @@ function MatchesView({ state, update, updateMatches, allTeams, openMatch }) {
     return <div className="text-center text-slate-500 py-12">Use a aba "Mata-Mata" pra ver os jogos.</div>;
   }
   const groupMatches = state.matches.filter((m) => m.stage === 'group');
+  if (groupMatches.length === 0) {
+    return <div className="text-center text-slate-500 py-12">Sem jogos gerados ainda.</div>;
+  }
+
+  /* Descobre todas as rodadas presentes */
+  const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => a - b);
+
+  /* Rodada padrão = primeira com pelo menos um jogo não jogado */
+  const defaultRound = useMemo(() => {
+    for (const r of rounds) {
+      const roundMatches = groupMatches.filter((m) => m.round === r);
+      if (roundMatches.some((m) => !m.played)) return r;
+    }
+    return rounds[rounds.length - 1]; // tudo jogado: mostra última
+  }, [rounds.join(','), groupMatches.length, groupMatches.filter((m) => m.played).length]);
+
+  const [currentRound, setCurrentRound] = useState(defaultRound);
+  /* Se o usuário não interagiu e o default mudou, segue */
+  const [userPicked, setUserPicked] = useState(false);
+  useEffect(() => {
+    if (!userPicked) setCurrentRound(defaultRound);
+  }, [defaultRound]); // eslint-disable-line
+
+  const pickRound = (r) => {
+    setUserPicked(true);
+    setCurrentRound(r);
+  };
+
+  const currentIdx = rounds.indexOf(currentRound);
+  const prev = currentIdx > 0 ? rounds[currentIdx - 1] : null;
+  const next = currentIdx < rounds.length - 1 ? rounds[currentIdx + 1] : null;
+
+  /* Jogos da rodada atual, agrupados por grupo */
+  const roundMatches = groupMatches.filter((m) => m.round === currentRound);
   const byGroup = {};
-  for (const m of groupMatches) {
+  for (const m of roundMatches) {
     if (!byGroup[m.group]) byGroup[m.group] = [];
     byGroup[m.group].push(m);
   }
+  const groupLetters = Object.keys(byGroup).sort();
+  const playedInRound = roundMatches.filter((m) => m.played).length;
+
+  const isReturnLeg = currentRound > 3;
+  const labelRound = isReturnLeg
+    ? `Rodada ${currentRound - 3} (volta)`
+    : `Rodada ${currentRound}`;
 
   return (
     <div className="space-y-4">
-      {Object.keys(byGroup).sort().map((letter) => (
-        <Card key={letter} className="p-3">
-          <h3 className="font-black text-lg mb-2">Grupo {letter}</h3>
-          <div className="space-y-1.5">
-            {byGroup[letter].sort((a, b) => a.round - b.round || a.id.localeCompare(b.id)).map((m) => (
-              <MatchRow key={m.id} match={m} state={state} onClick={() => openMatch(m.id)} />
-            ))}
+      {/* Header paginação */}
+      <div className="flex items-center justify-between gap-3 bg-slate-900/60 border border-slate-800 rounded-lg p-2">
+        <button
+          onClick={() => prev && pickRound(prev)}
+          disabled={!prev}
+          className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded-md text-sm font-medium"
+        >
+          <ChevronLeft className="w-4 h-4" /> <span className="hidden sm:inline">Anterior</span>
+        </button>
+        <div className="text-center">
+          <div className="text-base font-black">{labelRound}</div>
+          <div className="text-[10px] text-slate-500 tabular-nums">
+            {currentIdx + 1} de {rounds.length} · {playedInRound}/{roundMatches.length} jogados
           </div>
-        </Card>
-      ))}
+        </div>
+        <button
+          onClick={() => next && pickRound(next)}
+          disabled={!next}
+          className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded-md text-sm font-medium"
+        >
+          <span className="hidden sm:inline">Próxima</span> <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Mini-seletor de rodadas (pílulas pequenas) */}
+      <div className="flex flex-wrap gap-1 justify-center">
+        {rounds.map((r) => {
+          const rMatches = groupMatches.filter((m) => m.round === r);
+          const rPlayed = rMatches.filter((m) => m.played).length;
+          const allPlayed = rPlayed === rMatches.length;
+          const isCurrent = r === currentRound;
+          return (
+            <button key={r} onClick={() => pickRound(r)} className={cls(
+              'text-[10px] font-bold px-2 py-1 rounded border transition',
+              isCurrent ? 'bg-lime-400 text-slate-950 border-lime-400'
+                : allPlayed ? 'bg-slate-900/60 text-slate-500 border-slate-800 hover:border-slate-600'
+                : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-500'
+            )}>
+              R{r > 3 ? `${r - 3}v` : r}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Jogos da rodada agrupados por grupo */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {groupLetters.map((letter) => (
+          <Card key={letter} className="p-3">
+            <h3 className="font-black text-base mb-2 text-slate-300">Grupo {letter}</h3>
+            <div className="space-y-2">
+              {byGroup[letter].sort((a, b) => a.id.localeCompare(b.id)).map((m) => (
+                <MatchRow key={m.id} match={m} state={state} onClick={() => openMatch(m.id)} />
+              ))}
+            </div>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1133,28 +1246,41 @@ function MatchRow({ match, state, onClick }) {
   const away = getTeamById(state, match.awayTeamId);
   if (!home || !away) return null;
   const isAuto = match.autoPlayed;
+
+  /* Três estados visuais bem distintos */
+  let containerCls;
+  if (isAuto) {
+    containerCls = 'bg-slate-900/30 border-slate-800/60 opacity-60';
+  } else if (match.played) {
+    containerCls = 'bg-emerald-950/40 border-emerald-700/50 hover:border-emerald-500';
+  } else {
+    containerCls = 'bg-slate-900/80 border-2 border-dashed border-lime-500/40 hover:border-lime-400 hover:bg-slate-900';
+  }
+
   return (
-    <button
-      onClick={onClick}
-      className={cls(
-        'w-full grid grid-cols-[1fr_auto_1fr] items-center gap-2 p-2 rounded-lg border transition text-sm',
-        match.played
-          ? isAuto ? 'bg-slate-900/30 border-slate-800 opacity-60' : 'bg-slate-900/60 border-slate-700 hover:border-slate-600'
-          : 'bg-slate-900/40 border-slate-800 hover:border-lime-500/40'
+    <button onClick={onClick} className={cls('w-full p-2 rounded-lg border transition text-sm block', containerCls)}>
+      {isAuto && (
+        <div className="text-[9px] uppercase tracking-wider text-slate-500 mb-1 text-center font-bold">Auto-empate (mesmo dono)</div>
       )}
-    >
-      <div className="flex items-center gap-2 justify-end text-right truncate">
-        <span className="truncate">{home.name}</span>
-        <span>{home.flag}</span>
-        {home.owner && <span className={cls('w-1.5 h-1.5 rounded-full flex-shrink-0', home.owner === 'p1' ? 'bg-cyan-400' : 'bg-amber-400')} />}
-      </div>
-      <div className="font-mono font-bold tabular-nums px-2">
-        {match.played ? `${match.homeScore} × ${match.awayScore}` : '—'}
-      </div>
-      <div className="flex items-center gap-2 truncate">
-        {away.owner && <span className={cls('w-1.5 h-1.5 rounded-full flex-shrink-0', away.owner === 'p1' ? 'bg-cyan-400' : 'bg-amber-400')} />}
-        <span>{away.flag}</span>
-        <span className="truncate">{away.name}</span>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <div className="flex items-center gap-1.5 justify-end text-right truncate min-w-0">
+          <div className="flex flex-col items-end gap-0.5 min-w-0">
+            <span className="truncate font-medium">{home.flag} {home.name}</span>
+            <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+          </div>
+        </div>
+        <div className={cls('font-mono font-black tabular-nums px-3 py-1 rounded',
+          match.played && !isAuto ? 'bg-slate-950 text-lime-300 text-base' :
+          isAuto ? 'text-slate-600 text-sm' :
+          'text-slate-600 text-base')}>
+          {match.played ? `${match.homeScore}–${match.awayScore}` : '—'}
+        </div>
+        <div className="flex items-center gap-1.5 truncate min-w-0">
+          <div className="flex flex-col items-start gap-0.5 min-w-0">
+            <span className="truncate font-medium">{away.flag} {away.name}</span>
+            <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+          </div>
+        </div>
       </div>
     </button>
   );
@@ -1170,17 +1296,33 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
   const home = getTeamById(state, match.homeTeamId);
   const away = getTeamById(state, match.awayTeamId);
 
+  /* Sequência ordenada de jogos pra navegação Anterior/Próximo */
+  const orderedMatches = useMemo(() => {
+    return [...state.matches].sort((a, b) => {
+      const aIdx = STAGE_ORDER_INDEX[matchStageKey(a)] ?? 999;
+      const bIdx = STAGE_ORDER_INDEX[matchStageKey(b)] ?? 999;
+      if (aIdx !== bIdx) return aIdx - bIdx;
+      /* mesma rodada: ordena por grupo / koIndex / leg / isExtra */
+      if (a.stage === 'group') {
+        if (a.group !== b.group) return (a.group || '').localeCompare(b.group || '');
+        return a.id.localeCompare(b.id);
+      }
+      if ((a.koIndex ?? 0) !== (b.koIndex ?? 0)) return (a.koIndex ?? 0) - (b.koIndex ?? 0);
+      if ((a.leg ?? 1) !== (b.leg ?? 1)) return (a.leg ?? 1) - (b.leg ?? 1);
+      return (a.isExtra ? 1 : 0) - (b.isExtra ? 1 : 0);
+    });
+  }, [state.matches]);
+
+  const currentIdx = orderedMatches.findIndex((m) => m.id === matchId);
+  const prevMatch = currentIdx > 0 ? orderedMatches[currentIdx - 1] : null;
+  const nextMatch = currentIdx < orderedMatches.length - 1 ? orderedMatches[currentIdx + 1] : null;
+  /* Próximo jogo não jogado (atalho útil quando o próximo já está jogado) */
+  const nextUnplayed = orderedMatches.slice(currentIdx + 1).find((m) => !m.played && !m.autoPlayed);
+
   const setMatch = useCallback((updater) => {
     const newMatches = state.matches.map((m) => m.id === matchId ? (typeof updater === 'function' ? updater(m) : updater) : m);
-    /* propagate (mata-mata) */
-    const isKo = match.stage !== 'group';
-    let finalMatches = newMatches;
-    if (isKo) {
-      const { matches: propagated, changed } = propagateKnockoutWinners(newMatches);
-      finalMatches = propagated;
-    }
-    updateMatches(finalMatches);
-  }, [state.matches, matchId, match.stage, updateMatches]);
+    updateMatches(newMatches); // já faz auto-fill + seeding + propagation
+  }, [state.matches, matchId, updateMatches]);
 
   const setScore = (homeScore, awayScore) => {
     setMatch((m) => {
@@ -1208,9 +1350,36 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
 
   return (
     <div className="space-y-4">
-      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200">
-        <ChevronLeft className="w-4 h-4" /> Voltar
-      </button>
+      {/* Barra de navegação topo */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200">
+          <ChevronLeft className="w-4 h-4" /> Lista
+        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => prevMatch && openMatch(prevMatch.id)}
+            disabled={!prevMatch}
+            className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded text-sm font-medium"
+          >
+            <ChevronLeft className="w-4 h-4" /> Anterior
+          </button>
+          <button
+            onClick={() => nextMatch && openMatch(nextMatch.id)}
+            disabled={!nextMatch}
+            className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded text-sm font-medium"
+          >
+            Próximo <ChevronRight className="w-4 h-4" />
+          </button>
+          {nextUnplayed && nextUnplayed.id !== nextMatch?.id && (
+            <button
+              onClick={() => openMatch(nextUnplayed.id)}
+              className="flex items-center gap-1 px-3 py-1.5 bg-lime-500 hover:bg-lime-400 text-slate-950 rounded text-sm font-bold"
+            >
+              Próximo a jogar <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
 
       <Card className="p-4">
         <div className="text-xs uppercase tracking-wider text-slate-500 mb-3">{stageLabel}{legLabel}</div>
@@ -1223,6 +1392,24 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
         <TeamMatchPanel state={state} match={match} team={home} updateMatches={updateMatches} allMatches={state.matches} />
         <TeamMatchPanel state={state} match={match} team={away} updateMatches={updateMatches} allMatches={state.matches} />
       </div>
+
+      {/* Botões de navegação repetidos embaixo */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+        <button
+          onClick={() => prevMatch && openMatch(prevMatch.id)}
+          disabled={!prevMatch}
+          className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded text-sm font-medium"
+        >
+          <ChevronLeft className="w-4 h-4" /> Anterior
+        </button>
+        <button
+          onClick={() => nextMatch && openMatch(nextMatch.id)}
+          disabled={!nextMatch}
+          className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded text-sm font-medium"
+        >
+          Próximo <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -1230,7 +1417,7 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
 function ScoreEntry({ match, home, away, onChange }) {
   return (
     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-      <TeamHeader team={home} align="right" />
+      <TeamHeader team={home} align="right" p1Name={state.player1Name} p2Name={state.player2Name} />
       <div className="flex items-center gap-1">
         <input
           type="number" min="0"
@@ -1246,17 +1433,19 @@ function ScoreEntry({ match, home, away, onChange }) {
           className="w-14 p-2 text-center text-2xl font-black bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded outline-none tabular-nums"
         />
       </div>
-      <TeamHeader team={away} align="left" />
+      <TeamHeader team={away} align="left" p1Name={state.player1Name} p2Name={state.player2Name} />
     </div>
   );
 }
 
-function TeamHeader({ team, align = 'left' }) {
+function TeamHeader({ team, align = 'left', p1Name, p2Name }) {
   return (
     <div className={cls('flex items-center gap-2', align === 'right' && 'justify-end flex-row-reverse')}>
       <span className="text-2xl">{team.flag}</span>
-      <span className="font-bold truncate">{team.name}</span>
-      {team.owner && <span className={cls('w-2 h-2 rounded-full flex-shrink-0', team.owner === 'p1' ? 'bg-cyan-400' : 'bg-amber-400')} />}
+      <div className={cls('flex flex-col gap-0.5', align === 'right' && 'items-end')}>
+        <span className="font-bold truncate">{team.name}</span>
+        {team.owner && <OwnerTag owner={team.owner} p1Name={p1Name} p2Name={p2Name} />}
+      </div>
     </div>
   );
 }
@@ -1269,8 +1458,7 @@ function KnockoutMatchExtras({ state, match, home, away, update, updateMatches }
     if (!tied) return null;
     const setPenaltyWinner = (teamId) => {
       const newMatches = state.matches.map((m) => m.id === match.id ? { ...m, penaltyWinner: teamId } : m);
-      const { matches: propagated } = propagateKnockoutWinners(newMatches);
-      updateMatches(propagated);
+      updateMatches(newMatches);
     };
     return (
       <Card className="p-4 border-amber-700/50 bg-amber-900/10">
@@ -1363,10 +1551,20 @@ function TeamMatchPanel({ state, match, team, updateMatches, allMatches }) {
     updateMatch((m) => {
       const newRatings = { ...(m.ratings || {}) };
       const teamR = { ...(newRatings[team.id] || {}) };
-      if (val === '' || val == null) delete teamR[pname];
-      else teamR[pname] = val;
+      teamR[pname] = val ?? '';
       newRatings[team.id] = teamR;
       return { ...m, ratings: newRatings };
+    });
+  };
+  const removeRating = (pname) => {
+    updateMatch((m) => {
+      const newRatings = { ...(m.ratings || {}) };
+      const teamR = { ...(newRatings[team.id] || {}) };
+      delete teamR[pname];
+      newRatings[team.id] = teamR;
+      /* também limpa eventos que referenciam esse jogador */
+      const newEvents = (m.events || []).filter((ev) => !(ev.teamId === team.id && ev.playerName === pname));
+      return { ...m, ratings: newRatings, events: newEvents };
     });
   };
   const renameRatingPlayer = (oldName, newName) => {
@@ -1426,7 +1624,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, allMatches }) {
   return (
     <Card className="p-3">
       <div className="flex items-center justify-between mb-3">
-        <TeamHeader team={team} />
+        <TeamHeader team={team} p1Name={state.player1Name} p2Name={state.player2Name} />
       </div>
 
       {/* Avisos de suspensão */}
@@ -1479,7 +1677,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, allMatches }) {
             <RatingRow key={pname} name={pname} rating={rating}
               onRename={(nn) => renameRatingPlayer(pname, nn)}
               onChange={(v) => setRating(pname, v)}
-              onRemove={() => setRating(pname, '')}
+              onRemove={() => removeRating(pname)}
             />
           ))}
           <button onClick={addRatingPlayer} className="w-full text-xs text-slate-500 hover:text-lime-400 py-1 border border-dashed border-slate-800 rounded flex items-center justify-center gap-1">
@@ -1639,41 +1837,47 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
   const format = getFormat(state.formatId);
   const koMatches = state.matches.filter((m) => m.stage !== 'group');
 
-  /* Se nao tem KO ainda, ofertar geração (só pra formatos com grupos — KO direto já gera no setup) */
+  /* Se de algum jeito não tem KO gerado, gera agora */
   if (koMatches.length === 0) {
-    const groupMatches = state.matches.filter((m) => m.stage === 'group');
-    const allGroupsDone = groupMatches.length > 0 && groupMatches.every((m) => m.played);
     return (
-      <Card className="p-6">
-        {!allGroupsDone ? (
-          <div className="text-center text-slate-400">
-            <Trophy className="w-8 h-8 mx-auto mb-3 opacity-50" />
-            <h3 className="font-bold mb-1">Mata-mata ainda não disponível</h3>
-            <p className="text-sm">Termine todos os jogos da fase de grupos primeiro.</p>
-            <p className="text-xs mt-2 text-slate-500">{groupMatches.filter((m) => m.played).length}/{groupMatches.length} jogos jogados</p>
-          </div>
-        ) : (
-          <div className="text-center">
-            <Trophy className="w-8 h-8 mx-auto mb-3 text-lime-400" />
-            <h3 className="font-bold mb-2">Tudo certo pra começar o mata-mata!</h3>
-            <p className="text-sm text-slate-400 mb-4">Vamos gerar os confrontos baseado nas classificações da fase de grupos e nas regras que você configurou.</p>
-            <button
-              onClick={() => {
-                const matches = makeKnockoutMatches(state);
-                updateMatches([...state.matches, ...matches]);
-                update({ knockoutGenerated: true });
-              }}
-              className="px-5 py-3 bg-lime-500 hover:bg-lime-400 text-slate-950 font-bold rounded-lg"
-            >
-              Gerar chave do mata-mata
-            </button>
-          </div>
-        )}
+      <Card className="p-6 text-center">
+        <Trophy className="w-8 h-8 mx-auto mb-3 text-lime-400" />
+        <h3 className="font-bold mb-2">Mata-mata ainda não foi gerado</h3>
+        <button
+          onClick={() => {
+            const newKo = makeKnockoutMatches(state);
+            updateMatches([...state.matches, ...newKo]);
+            update({ knockoutGenerated: true });
+          }}
+          className="mt-2 px-5 py-3 bg-lime-500 hover:bg-lime-400 text-slate-950 font-bold rounded-lg"
+        >
+          Gerar chave do mata-mata
+        </button>
       </Card>
     );
   }
 
-  return <KnockoutBracket state={state} koMatches={koMatches} updateMatches={updateMatches} openMatch={openMatch} />;
+  /* Verifica se a fase de grupos ainda está em andamento — pra mostrar aviso */
+  const groupMatches = state.matches.filter((m) => m.stage === 'group');
+  const groupPlayed = groupMatches.filter((m) => m.played).length;
+  const groupTotal = groupMatches.length;
+  const groupsInProgress = format.hasGroups && groupPlayed < groupTotal;
+
+  return (
+    <div className="space-y-4">
+      {groupsInProgress && (
+        <div className="bg-amber-900/20 border border-amber-800/50 text-amber-200 text-xs rounded-lg p-3 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>
+            Fase de grupos em andamento ({groupPlayed}/{groupTotal} jogos). A chave abaixo mostra a projeção
+            atual e <strong>vai mudar</strong> conforme as classificações se definirem.
+            Confrontos do mata-mata que já tenham resultado preenchido <strong>não são alterados</strong>.
+          </span>
+        </div>
+      )}
+      <KnockoutBracket state={state} koMatches={koMatches} updateMatches={updateMatches} openMatch={openMatch} />
+    </div>
+  );
 }
 
 function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
@@ -1772,17 +1976,25 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
    STATS VIEW
    ============================================================ */
 function StatsView({ state, allTeams }) {
-  const stats = useMemo(() => computePlayerStats(state), [state.matches]);
+  const playerStats = useMemo(() => computePlayerStats(state), [state.matches]);
+  const teamStats   = useMemo(() => computeTeamStats(state),   [state.matches]);
+  const ownerStats  = useMemo(() => computeOwnerStats(state),  [state.matches]);
 
-  const topScorers = [...stats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
-  const topAssists = [...stats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
-  const topRated = [...stats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg).slice(0, 10);
-  const mostCards = [...stats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows)).slice(0, 10);
+  const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
+  const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
+  const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg).slice(0, 10);
+  const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows)).slice(0, 10);
+
+  /* Times ordenados */
+  const teamsByGoals    = [...teamStats].filter((t) => t.P > 0).sort((a, b) => b.GP - a.GP).slice(0, 10);
+  const teamsByDefense  = [...teamStats].filter((t) => t.P > 0).sort((a, b) => a.GC - b.GC || b.P - a.P).slice(0, 10);
+  const teamsByWinPct   = [...teamStats].filter((t) => t.P >= 2).sort((a, b) => b.winPct - a.winPct || b.Pts - a.Pts).slice(0, 10);
 
   const champion = getChampion(state);
+  const noStatsYet = teamStats.every((t) => t.P === 0);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {champion && (
         <Card className="p-5 border-amber-700/60 bg-gradient-to-br from-amber-900/30 to-yellow-900/10">
           <div className="flex items-center gap-3">
@@ -1797,13 +2009,106 @@ function StatsView({ state, allTeams }) {
           </div>
         </Card>
       )}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} />
-        <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} />
-        <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} />
-        <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} />
-      </div>
+
+      {/* Comparação entre jogadores */}
+      <section>
+        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" /> Jogadores
+        </h2>
+        <Card className="p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {ownerStats.map((o) => (
+              <div key={o.id} className={cls('p-3 rounded-lg border',
+                o.id === 'p1' ? 'bg-cyan-950/30 border-cyan-800/50' : 'bg-amber-950/30 border-amber-800/50'
+              )}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="font-black text-lg">{o.name}</div>
+                  <span className="text-xs text-slate-400">{o.teams} times</span>
+                </div>
+                {o.P === 0 ? (
+                  <div className="text-xs text-slate-500 italic">Sem jogos ainda.</div>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <KpiCell label="Jogos" value={o.P} />
+                    <KpiCell label="Pontos" value={o.Pts} />
+                    <KpiCell label="% Apr." value={`${o.winPct}%`} highlight={o.winPct >= 50} />
+                    <KpiCell label="V-E-D" value={`${o.V}-${o.E}-${o.D}`} />
+                    <KpiCell label="Gols pró" value={o.GP} />
+                    <KpiCell label="Saldo" value={(o.SG > 0 ? '+' : '') + o.SG} highlight={o.SG > 0} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </section>
+
+      {/* Stats por time */}
+      <section>
+        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+          <Trophy className="w-4 h-4" /> Times
+        </h2>
+        {noStatsYet ? (
+          <Card className="p-4 text-xs text-slate-500 italic">Sem jogos contabilizados ainda.</Card>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <TeamStatsList title="Mais marcaram (gols pró)" list={teamsByGoals} state={state}
+              render={(t) => <span className="font-bold tabular-nums">{t.GP}<span className="text-slate-500 text-xs font-normal"> ({t.P}j)</span></span>} />
+            <TeamStatsList title="Melhor defesa (menos gols sofridos)" list={teamsByDefense} state={state}
+              render={(t) => <span className="font-bold tabular-nums">{t.GC}<span className="text-slate-500 text-xs font-normal"> ({t.P}j)</span></span>} />
+            <TeamStatsList title="Melhor aproveitamento" list={teamsByWinPct} state={state}
+              render={(t) => <span className="font-bold tabular-nums">{t.winPct}%<span className="text-slate-500 text-xs font-normal"> ({t.Pts}pts)</span></span>} />
+            <TeamStatsList title="Tabela completa" list={[...teamStats].filter((t) => t.P > 0).sort((a, b) => b.Pts - a.Pts || b.SG - a.SG).slice(0, 10)} state={state}
+              render={(t) => <span className="text-xs tabular-nums text-slate-400">{t.V}V {t.E}E {t.D}D · <span className="font-bold text-slate-100">{t.Pts}pt</span></span>} />
+          </div>
+        )}
+      </section>
+
+      {/* Stats de jogadores (do game) */}
+      <section>
+        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+          <Star className="w-4 h-4" /> Jogadores em campo
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} />
+          <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} />
+          <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} />
+          <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} />
+        </div>
+      </section>
     </div>
+  );
+}
+
+function KpiCell({ label, value, highlight }) {
+  return (
+    <div className={cls('rounded p-1.5 bg-slate-950/40')}>
+      <div className="text-[9px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className={cls('font-black text-lg tabular-nums', highlight ? 'text-lime-300' : 'text-slate-100')}>{value}</div>
+    </div>
+  );
+}
+
+function TeamStatsList({ title, list, render, state }) {
+  return (
+    <Card className="p-3">
+      <h3 className="text-sm font-bold uppercase tracking-wider mb-2 text-slate-300">{title}</h3>
+      {list.length === 0 ? (
+        <div className="text-xs text-slate-600 italic py-2">Sem dados ainda.</div>
+      ) : (
+        <div className="space-y-1">
+          {list.map((t, i) => (
+            <div key={t.teamId} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
+              <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
+              <span className="text-sm">{t.flag}</span>
+              <span className="flex-1 truncate font-medium">{t.name}</span>
+              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+              <div className="min-w-[60px] text-right">{render(t)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
