@@ -111,18 +111,31 @@ function OwnerBadge({ owner, p1Name, p2Name }) {
   return <Pill color="amber">{p2Name}</Pill>;
 }
 
-/* Pequeno tag colorido com nome do dono (substitui as bolinhas) */
-function OwnerTag({ owner, p1Name, p2Name, size = 'sm' }) {
+/* Pequeno tag colorido com nome do dono.
+   Aceita cores customizadas via p1Color/p2Color, ou cai pros defaults. */
+function OwnerTag({ owner, p1Name, p2Name, p1Color, p2Color, size = 'sm', fullWidth = false }) {
   if (!owner) return null;
   const name = owner === 'p1' ? p1Name : p2Name;
-  const short = (name || '').slice(0, 8);
-  const baseColors = owner === 'p1'
-    ? 'bg-cyan-500 text-slate-950'
-    : 'bg-amber-500 text-slate-950';
+  const color = owner === 'p1' ? (p1Color || '#06b6d4') : (p2Color || '#f59e0b');
   const sizeCls = size === 'xs'
-    ? 'text-[9px] px-1 py-0 leading-tight'
-    : 'text-[10px] px-1.5 py-0.5 leading-tight';
-  return <span className={cls('inline-block rounded font-black tracking-tight', baseColors, sizeCls)}>{short}</span>;
+    ? 'text-[10px] px-1.5 py-0 leading-tight'
+    : 'text-[11px] px-2 py-0.5 leading-tight';
+  return (
+    <span
+      className={cls('inline-block rounded font-black tracking-tight text-slate-950 truncate', sizeCls, fullWidth && 'block')}
+      style={{ backgroundColor: color, maxWidth: '14rem' }}
+      title={name}
+    >
+      {name}
+    </span>
+  );
+}
+
+/* Helper pra pegar cor do dono dado state + ownerKey */
+function getOwnerColor(state, owner) {
+  if (owner === 'p1') return state?.player1Color || '#06b6d4';
+  if (owner === 'p2') return state?.player2Color || '#f59e0b';
+  return '#64748b'; // slate
 }
 
 /* ============================================================
@@ -678,11 +691,15 @@ function WizardShell({ step, totalSteps, title, subtitle, code, onLeave, childre
 function SetupPlayersView({ state, update, code, onLeave }) {
   const [p1, setP1] = useState(state.player1Name === 'Jogador 1' ? '' : state.player1Name);
   const [p2, setP2] = useState(state.player2Name === 'Jogador 2' ? '' : state.player2Name);
+  const [p1Color, setP1Color] = useState(state.player1Color || '#06b6d4');
+  const [p2Color, setP2Color] = useState(state.player2Color || '#f59e0b');
 
   const handleNext = () => {
     update({
       player1Name: p1.trim() || 'Jogador 1',
       player2Name: p2.trim() || 'Jogador 2',
+      player1Color: p1Color,
+      player2Color: p2Color,
       setupComplete: true,
     });
   };
@@ -690,11 +707,11 @@ function SetupPlayersView({ state, update, code, onLeave }) {
   return (
     <WizardShell step={1} totalSteps={3} code={code} onLeave={onLeave}
       title="Quem são os jogadores?"
-      subtitle="Defina os nomes dos dois jogadores que vão disputar este torneio."
+      subtitle="Nome e cor de cada jogador. A cor aparece em todo lugar (tabelas, jogos, mata-mata) pra deixar claro de quem é cada time."
     >
-      <Card className="p-5 space-y-4">
-        <PlayerField label="Jogador 1" value={p1} onChange={setP1} placeholder="Ex: João" color="cyan" />
-        <PlayerField label="Jogador 2" value={p2} onChange={setP2} placeholder="Ex: Pedro" color="amber" />
+      <Card className="p-5 space-y-5">
+        <PlayerField label="Jogador 1" value={p1} onChange={setP1} placeholder="Ex: João" color={p1Color} onColorChange={setP1Color} otherColor={p2Color} />
+        <PlayerField label="Jogador 2" value={p2} onChange={setP2} placeholder="Ex: Pedro" color={p2Color} onColorChange={setP2Color} otherColor={p1Color} />
       </Card>
       <div className="mt-6 flex justify-end">
         <button onClick={handleNext} className="px-6 py-3 bg-lime-500 hover:bg-lime-400 text-slate-950 font-bold rounded-lg flex items-center gap-2">
@@ -705,20 +722,69 @@ function SetupPlayersView({ state, update, code, onLeave }) {
   );
 }
 
-function PlayerField({ label, value, onChange, placeholder, color }) {
+/* Paleta sugerida — cores claras o suficiente pra texto preto contrastar bem */
+const PLAYER_COLOR_PALETTE = [
+  '#06b6d4', // cyan
+  '#f59e0b', // amber
+  '#ec4899', // pink
+  '#8b5cf6', // violet
+  '#10b981', // emerald
+  '#f97316', // orange
+  '#a855f7', // purple
+  '#14b8a6', // teal
+  '#6366f1', // indigo
+  '#84cc16', // lime
+  '#ef4444', // red
+  '#3b82f6', // blue
+];
+
+function PlayerField({ label, value, onChange, placeholder, color, onColorChange, otherColor }) {
   return (
     <div>
-      <label className="text-xs uppercase font-bold tracking-wider text-slate-400 mb-1.5 flex items-center gap-2">
-        <span className={cls('w-2 h-2 rounded-full', color === 'cyan' ? 'bg-cyan-400' : 'bg-amber-400')}></span>
+      <label className="text-xs uppercase font-bold tracking-wider text-slate-400 mb-2 flex items-center gap-2">
+        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
         {label}
       </label>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        maxLength={30}
-        className="w-full p-3 bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded-lg outline-none"
-      />
+      <div className="space-y-2">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          maxLength={30}
+          className="w-full p-3 bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded-lg outline-none"
+        />
+        {/* Preview do tag */}
+        {value && (
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>Vai aparecer assim:</span>
+            <span className="inline-block px-2 py-0.5 rounded text-[11px] font-black text-slate-950" style={{ backgroundColor: color }}>
+              {value}
+            </span>
+          </div>
+        )}
+        {/* Swatches de cor */}
+        <div className="flex flex-wrap gap-1.5">
+          {PLAYER_COLOR_PALETTE.map((c) => {
+            const isSelected = c.toLowerCase() === color.toLowerCase();
+            const isOther = c.toLowerCase() === otherColor.toLowerCase();
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => onColorChange(c)}
+                disabled={isOther}
+                className={cls(
+                  'w-7 h-7 rounded transition',
+                  isSelected && 'ring-2 ring-white ring-offset-2 ring-offset-slate-950',
+                  isOther && 'opacity-30 cursor-not-allowed',
+                )}
+                style={{ backgroundColor: c }}
+                title={isOther ? 'Já usada pelo outro jogador' : c}
+              />
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1112,7 +1178,7 @@ function StandingTable({ rows, state }) {
           <tr key={r.id} className={cls('border-t border-slate-800', i < 2 && 'text-lime-300', i === 2 && 'text-yellow-300')}>
             <td className="py-1">{i + 1}</td>
             <td className="py-1"><span className="mr-1">{r.flag}</span>{r.name}</td>
-            <td className="py-1 px-1"><OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" /></td>
+            <td className="py-1 px-1"><OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" /></td>
             <td className="text-center py-1 tabular-nums">{r.P}</td>
             <td className="text-center py-1 tabular-nums">{r.V}</td>
             <td className="text-center py-1 tabular-nums">{r.E}</td>
@@ -1270,7 +1336,7 @@ function MatchRow({ match, state, onClick }) {
         <div className="flex items-center gap-1.5 justify-end text-right truncate min-w-0">
           <div className="flex flex-col items-end gap-0.5 min-w-0">
             <span className="truncate font-medium">{home.flag} {home.name}</span>
-            <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+            <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
         </div>
         <div className={cls('font-mono font-black tabular-nums px-3 py-1 rounded',
@@ -1282,7 +1348,7 @@ function MatchRow({ match, state, onClick }) {
         <div className="flex items-center gap-1.5 truncate min-w-0">
           <div className="flex flex-col items-start gap-0.5 min-w-0">
             <span className="truncate font-medium">{away.flag} {away.name}</span>
-            <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+            <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
         </div>
       </div>
@@ -1387,14 +1453,14 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
 
       <Card className="p-4">
         <div className="text-xs uppercase tracking-wider text-slate-500 mb-3">{stageLabel}{legLabel}</div>
-        <ScoreEntry match={match} home={home} away={away} onChange={setScore} p1Name={state.player1Name} p2Name={state.player2Name} />
+        <ScoreEntry match={match} home={home} away={away} onChange={setScore} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} />
       </Card>
 
       {isKo && <KnockoutMatchExtras state={state} match={match} home={home} away={away} update={update} updateMatches={updateMatches} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <TeamMatchPanel state={state} match={match} team={home} updateMatches={updateMatches} allMatches={state.matches} />
-        <TeamMatchPanel state={state} match={match} team={away} updateMatches={updateMatches} allMatches={state.matches} />
+        <TeamMatchPanel state={state} match={match} team={home} updateMatches={updateMatches} update={update} allMatches={state.matches} />
+        <TeamMatchPanel state={state} match={match} team={away} updateMatches={updateMatches} update={update} allMatches={state.matches} />
       </div>
 
       {/* Botões de navegação repetidos embaixo */}
@@ -1418,37 +1484,49 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
   );
 }
 
-function ScoreEntry({ match, home, away, onChange, p1Name, p2Name }) {
+function ScoreEntry({ match, home, away, onChange, p1Name, p2Name, p1Color, p2Color }) {
+  /* Gradiente sutil de cor do dono ao redor do placar */
+  const homeColor = home.owner === 'p1' ? p1Color : home.owner === 'p2' ? p2Color : '#475569';
+  const awayColor = away.owner === 'p1' ? p1Color : away.owner === 'p2' ? p2Color : '#475569';
+
   return (
     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-      <TeamHeader team={home} align="right" p1Name={p1Name} p2Name={p2Name} />
-      <div className="flex items-center gap-1">
+      <TeamHeader team={home} align="right" p1Name={p1Name} p2Name={p2Name} p1Color={p1Color} p2Color={p2Color} />
+      <div
+        className="flex items-center gap-1 p-2 rounded-xl"
+        style={{
+          background: `linear-gradient(135deg, ${homeColor}33 0%, ${awayColor}33 100%)`,
+          border: `1px solid ${homeColor}55`,
+        }}
+      >
         <input
           type="number" min="0"
           value={match.homeScore ?? ''}
           onChange={(e) => onChange(e.target.value, match.awayScore ?? '')}
-          className="w-14 p-2 text-center text-2xl font-black bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded outline-none tabular-nums"
+          className="w-14 p-2 text-center text-2xl font-black bg-slate-950/70 border-2 rounded outline-none tabular-nums"
+          style={{ borderColor: `${homeColor}99` }}
         />
-        <span className="text-2xl text-slate-600 font-black">×</span>
+        <span className="text-2xl text-slate-200 font-black">×</span>
         <input
           type="number" min="0"
           value={match.awayScore ?? ''}
           onChange={(e) => onChange(match.homeScore ?? '', e.target.value)}
-          className="w-14 p-2 text-center text-2xl font-black bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded outline-none tabular-nums"
+          className="w-14 p-2 text-center text-2xl font-black bg-slate-950/70 border-2 rounded outline-none tabular-nums"
+          style={{ borderColor: `${awayColor}99` }}
         />
       </div>
-      <TeamHeader team={away} align="left" p1Name={p1Name} p2Name={p2Name} />
+      <TeamHeader team={away} align="left" p1Name={p1Name} p2Name={p2Name} p1Color={p1Color} p2Color={p2Color} />
     </div>
   );
 }
 
-function TeamHeader({ team, align = 'left', p1Name, p2Name }) {
+function TeamHeader({ team, align = 'left', p1Name, p2Name, p1Color, p2Color }) {
   return (
     <div className={cls('flex items-center gap-2', align === 'right' && 'justify-end flex-row-reverse')}>
       <span className="text-2xl">{team.flag}</span>
-      <div className={cls('flex flex-col gap-0.5', align === 'right' && 'items-end')}>
+      <div className={cls('flex flex-col gap-0.5 min-w-0', align === 'right' && 'items-end')}>
         <span className="font-bold truncate">{team.name}</span>
-        {team.owner && <OwnerTag owner={team.owner} p1Name={p1Name} p2Name={p2Name} />}
+        {team.owner && <OwnerTag owner={team.owner} p1Name={p1Name} p2Name={p2Name} p1Color={p1Color} p2Color={p2Color} />}
       </div>
     </div>
   );
@@ -1531,165 +1609,277 @@ function KnockoutMatchExtras({ state, match, home, away, update, updateMatches }
 }
 
 /* --- Team panel: eventos + notas --- */
-function TeamMatchPanel({ state, match, team, updateMatches, allMatches }) {
-  const updateMatch = (updater) => {
-    updateMatches(state.matches.map((m) => m.id === match.id ? (typeof updater === 'function' ? updater(m) : updater) : m));
-  };
+function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches }) {
+  const teamColor = getOwnerColor(state, team.owner);
   const events = (match.events || []).filter((e) => e.teamId === team.id);
   const ratings = match.ratings?.[team.id] || {};
 
-  const addEvent = (type) => {
+  /* Roster persistente desse time */
+  const persistentRoster = useMemo(() => state.teamRosters?.[team.id] || [], [state.teamRosters, team.id]);
+
+  /* Jogadores exibidos: roster + qualquer jogador presente nesse jogo (eventos ou notas) */
+  const displayedPlayers = useMemo(() => {
+    const fromMatch = new Set([
+      ...Object.keys(ratings),
+      ...events.map((e) => e.playerName).filter(Boolean),
+    ]);
+    const combined = [...persistentRoster];
+    for (const p of fromMatch) if (!combined.includes(p)) combined.push(p);
+    return combined;
+  }, [persistentRoster, ratings, events]);
+
+  /* Conta eventos por jogador e tipo */
+  const countEv = (player, type) => events.filter((e) => e.playerName === player && e.type === type).length;
+
+  const updateMatch = (updater) => {
+    updateMatches(state.matches.map((m) => m.id === match.id ? (typeof updater === 'function' ? updater(m) : updater) : m));
+  };
+
+  /* === Ações no roster persistente === */
+  const setRoster = (newList) => {
+    const newRosters = { ...(state.teamRosters || {}), [team.id]: newList };
+    update({ teamRosters: newRosters });
+  };
+  const addPlayerToRoster = (rawName) => {
+    const name = (rawName || '').trim();
+    if (!name) return;
+    if (persistentRoster.includes(name)) return;
+    setRoster([...persistentRoster, name]);
+  };
+  const removePlayerEverywhere = (name) => {
+    /* Remove do roster permanente */
+    setRoster(persistentRoster.filter((p) => p !== name));
+    /* E remove do jogo atual */
+    updateMatch((m) => {
+      const newRatings = { ...(m.ratings || {}) };
+      const teamR = { ...(newRatings[team.id] || {}) };
+      delete teamR[name];
+      newRatings[team.id] = teamR;
+      const newEvents = (m.events || []).filter((ev) => !(ev.teamId === team.id && ev.playerName === name));
+      return { ...m, ratings: newRatings, events: newEvents };
+    });
+  };
+  const renamePlayer = (oldName, newName) => {
+    const trimmed = (newName || '').trim();
+    if (!trimmed || trimmed === oldName) return;
+    /* Atualiza roster */
+    const newRoster = persistentRoster.map((p) => p === oldName ? trimmed : p);
+    /* Atualiza match (rename em ratings e events) — junto */
+    const newRosters = { ...(state.teamRosters || {}), [team.id]: newRoster };
+    update({
+      teamRosters: newRosters,
+      matches: state.matches.map((m) => {
+        if (m.id !== match.id) return m;
+        const newRatings = { ...(m.ratings || {}) };
+        const teamR = { ...(newRatings[team.id] || {}) };
+        if (teamR[oldName] !== undefined) {
+          teamR[trimmed] = teamR[oldName];
+          delete teamR[oldName];
+        }
+        newRatings[team.id] = teamR;
+        const newEvents = (m.events || []).map((ev) =>
+          ev.teamId === team.id && ev.playerName === oldName ? { ...ev, playerName: trimmed } : ev
+        );
+        return { ...m, ratings: newRatings, events: newEvents };
+      }),
+    });
+  };
+
+  /* === Eventos === */
+  const incrementEvent = (player, type) => {
     updateMatch((m) => ({
       ...m,
-      events: [...(m.events || []), { id: Math.random().toString(36).slice(2), teamId: team.id, type, playerName: '', minute: '' }],
+      events: [...(m.events || []), { id: Math.random().toString(36).slice(2), teamId: team.id, type, playerName: player }],
     }));
   };
-  const updateEvent = (eid, patch) => {
-    updateMatch((m) => ({ ...m, events: (m.events || []).map((e) => e.id === eid ? { ...e, ...patch } : e) }));
-  };
-  const removeEvent = (eid) => {
-    updateMatch((m) => ({ ...m, events: (m.events || []).filter((e) => e.id !== eid) }));
-  };
-
-  const setRating = (pname, val) => {
+  const decrementEvent = (player, type) => {
     updateMatch((m) => {
-      const newRatings = { ...(m.ratings || {}) };
-      const teamR = { ...(newRatings[team.id] || {}) };
-      teamR[pname] = val ?? '';
-      newRatings[team.id] = teamR;
-      return { ...m, ratings: newRatings };
+      const evs = [...(m.events || [])];
+      const idx = evs.findIndex((e) => e.teamId === team.id && e.playerName === player && e.type === type);
+      if (idx >= 0) evs.splice(idx, 1);
+      return { ...m, events: evs };
     });
   };
-  const removeRating = (pname) => {
-    updateMatch((m) => {
-      const newRatings = { ...(m.ratings || {}) };
-      const teamR = { ...(newRatings[team.id] || {}) };
-      delete teamR[pname];
-      newRatings[team.id] = teamR;
-      /* também limpa eventos que referenciam esse jogador */
-      const newEvents = (m.events || []).filter((ev) => !(ev.teamId === team.id && ev.playerName === pname));
-      return { ...m, ratings: newRatings, events: newEvents };
-    });
-  };
-  const renameRatingPlayer = (oldName, newName) => {
-    if (!newName || newName === oldName) return;
-    updateMatch((m) => {
-      const newRatings = { ...(m.ratings || {}) };
-      const teamR = { ...(newRatings[team.id] || {}) };
-      teamR[newName] = teamR[oldName];
-      delete teamR[oldName];
-      newRatings[team.id] = teamR;
-      /* renomeia também nos events */
-      const newEvents = (m.events || []).map((ev) => ev.teamId === team.id && ev.playerName === oldName ? { ...ev, playerName: newName } : ev);
-      return { ...m, ratings: newRatings, events: newEvents };
-    });
-  };
-  const addRatingPlayer = () => {
-    const baseName = 'Jogador';
-    let i = 1;
-    while (ratings[`${baseName} ${i}`] !== undefined) i++;
-    setRating(`${baseName} ${i}`, '');
-  };
 
-  /* Copiar escalação do último jogo deste time */
-  const lastMatchWithRatings = useMemo(() => {
-    const prev = allMatches
-      .filter((m) => m.id !== match.id && m.played && !m.autoPlayed && (m.homeTeamId === team.id || m.awayTeamId === team.id))
-      .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(b)] || 0) - (STAGE_ORDER_INDEX[matchStageKey(a)] || 0));
-    for (const m of prev) {
-      const tr = m.ratings?.[team.id];
-      if (tr && Object.keys(tr).length > 0) return m;
-    }
-    return null;
-  }, [allMatches, match.id, team.id]);
-
-  const copyLineup = () => {
-    if (!lastMatchWithRatings) return;
-    const prevRatings = lastMatchWithRatings.ratings[team.id] || {};
+  /* === Notas === */
+  const setRating = (player, val) => {
     updateMatch((m) => {
       const newRatings = { ...(m.ratings || {}) };
       const teamR = { ...(newRatings[team.id] || {}) };
-      for (const pname of Object.keys(prevRatings)) {
-        if (teamR[pname] === undefined) teamR[pname] = '';
-      }
+      teamR[player] = val ?? '';
       newRatings[team.id] = teamR;
       return { ...m, ratings: newRatings };
     });
   };
 
-  /* Próximo stage pra checar suspensão (esse mesmo jogo) */
+  /* === Adicionar novo jogador (input controlado) === */
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const handleAddPlayer = () => {
+    addPlayerToRoster(newPlayerName);
+    setNewPlayerName('');
+  };
+
+  /* === Suspensões === */
   const upToStageKey = matchStageKey(match);
 
-  const players = Array.from(new Set([
-    ...Object.keys(ratings),
-    ...events.filter((e) => e.playerName).map((e) => e.playerName),
-  ]));
-
   return (
-    <Card className="p-3">
+    <Card
+      className="p-3"
+      style={{
+        backgroundColor: `${teamColor}15`, // ~8% opacity em hex
+        borderColor: `${teamColor}55`,
+      }}
+    >
       <div className="flex items-center justify-between mb-3">
-        <TeamHeader team={team} p1Name={state.player1Name} p2Name={state.player2Name} />
+        <TeamHeader team={team} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} />
+        <PhotoRatingsButton playerNames={displayedPlayers} onExtracted={(playersWithRatings) => {
+          updateMatch((m) => {
+            const newRatings = { ...(m.ratings || {}) };
+            const teamR = { ...(newRatings[team.id] || {}) };
+            for (const { name, rating } of playersWithRatings) {
+              if (name && rating != null) teamR[name] = rating;
+            }
+            newRatings[team.id] = teamR;
+            return { ...m, ratings: newRatings };
+          });
+          /* Adiciona novos jogadores extraídos da foto ao roster */
+          const newToAdd = playersWithRatings.map((p) => p.name).filter((n) => n && !persistentRoster.includes(n));
+          if (newToAdd.length > 0) setRoster([...persistentRoster, ...newToAdd]);
+        }} />
       </div>
 
       {/* Avisos de suspensão */}
-      {players.length > 0 && (
-        <SuspensionWarnings state={state} teamId={team.id} players={players} upToStageKey={upToStageKey} />
+      {displayedPlayers.length > 0 && (
+        <SuspensionWarnings state={state} teamId={team.id} players={displayedPlayers} upToStageKey={upToStageKey} />
       )}
 
-      {/* Eventos */}
-      <div className="space-y-1.5 mb-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-xs uppercase tracking-wider text-slate-500 font-bold">Eventos</span>
-          <div className="flex gap-1">
-            <EventBtn icon={<Goal className="w-3 h-3" />} color="emerald" onClick={() => addEvent('goal')}>Gol</EventBtn>
-            <EventBtn icon={<Hand className="w-3 h-3" />} color="sky" onClick={() => addEvent('assist')}>Assist</EventBtn>
-            <EventBtn icon={<span className="inline-block w-2 h-3 bg-yellow-400 rounded-sm" />} color="yellow" onClick={() => addEvent('yellow')}>Amarelo</EventBtn>
-            <EventBtn icon={<span className="inline-block w-2 h-3 bg-red-500 rounded-sm" />} color="red" onClick={() => addEvent('red')}>Vermelho</EventBtn>
-          </div>
-        </div>
-        {events.length === 0 && <div className="text-xs text-slate-600 italic py-1">Sem eventos.</div>}
-        {events.map((e) => (
-          <EventRow key={e.id} event={e} players={players} onUpdate={(p) => updateEvent(e.id, p)} onRemove={() => removeEvent(e.id)} />
-        ))}
+      {/* Tabela de jogadores */}
+      <div className="overflow-x-auto -mx-3 px-3">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-[9px] uppercase font-bold text-slate-500 tracking-wider">
+              <th className="text-left pb-1 pr-1">Jogador</th>
+              <th className="pb-1 px-0.5 w-12" title="Gols"><Goal className="w-3.5 h-3.5 text-emerald-400 inline" /></th>
+              <th className="pb-1 px-0.5 w-12" title="Assistências"><Hand className="w-3.5 h-3.5 text-sky-400 inline" /></th>
+              <th className="pb-1 px-0.5 w-10" title="Amarelos"><span className="inline-block w-2 h-3 bg-yellow-400 rounded-sm" /></th>
+              <th className="pb-1 px-0.5 w-10" title="Vermelhos"><span className="inline-block w-2 h-3 bg-red-500 rounded-sm" /></th>
+              <th className="pb-1 px-0.5 w-14" title="Nota"><Star className="w-3.5 h-3.5 text-yellow-300 inline" /></th>
+              <th className="pb-1 w-6"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {displayedPlayers.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-slate-600 italic text-center py-2">Sem jogadores cadastrados. Adicione abaixo.</td>
+              </tr>
+            )}
+            {displayedPlayers.map((player) => (
+              <PlayerRow
+                key={player}
+                player={player}
+                rating={ratings[player] ?? ''}
+                goals={countEv(player, 'goal')}
+                assists={countEv(player, 'assist')}
+                yellows={countEv(player, 'yellow')}
+                reds={countEv(player, 'red')}
+                onIncrement={(t) => incrementEvent(player, t)}
+                onDecrement={(t) => decrementEvent(player, t)}
+                onRename={(nn) => renamePlayer(player, nn)}
+                onSetRating={(v) => setRating(player, v)}
+                onRemove={() => removePlayerEverywhere(player)}
+              />
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      {/* Notas */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs uppercase tracking-wider text-slate-500 font-bold">Notas</span>
-          <div className="flex gap-1">
-            {lastMatchWithRatings && (
-              <button onClick={copyLineup} className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 flex items-center gap-1" title="Copia os jogadores do último jogo deste time">
-                <Copy className="w-3 h-3" /> Última escalação
-              </button>
-            )}
-            <PhotoRatingsButton playerNames={Object.keys(ratings)} onExtracted={(playersWithRatings) => {
-              updateMatch((m) => {
-                const newRatings = { ...(m.ratings || {}) };
-                const teamR = { ...(newRatings[team.id] || {}) };
-                for (const { name, rating } of playersWithRatings) {
-                  if (name && rating != null) teamR[name] = rating;
-                }
-                newRatings[team.id] = teamR;
-                return { ...m, ratings: newRatings };
-              });
-            }} />
-          </div>
-        </div>
-        <div className="space-y-1">
-          {Object.entries(ratings).map(([pname, rating]) => (
-            <RatingRow key={pname} name={pname} rating={rating}
-              onRename={(nn) => renameRatingPlayer(pname, nn)}
-              onChange={(v) => setRating(pname, v)}
-              onRemove={() => removeRating(pname)}
-            />
-          ))}
-          <button onClick={addRatingPlayer} className="w-full text-xs text-slate-500 hover:text-lime-400 py-1 border border-dashed border-slate-800 rounded flex items-center justify-center gap-1">
-            <Plus className="w-3 h-3" /> Adicionar jogador
-          </button>
-        </div>
+      {/* Adicionar novo jogador */}
+      <div className="mt-2 flex gap-1">
+        <input
+          value={newPlayerName}
+          onChange={(e) => setNewPlayerName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleAddPlayer()}
+          placeholder="+ Novo jogador (fica salvo no time)"
+          className="flex-1 text-xs bg-slate-950/40 border border-slate-800 focus:border-lime-400 rounded px-2 py-1.5 outline-none"
+        />
+        <button
+          onClick={handleAddPlayer}
+          disabled={!newPlayerName.trim()}
+          className="px-3 py-1.5 bg-lime-500 hover:bg-lime-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold rounded"
+        >
+          <Plus className="w-3 h-3" />
+        </button>
       </div>
+      {persistentRoster.length > 0 && (
+        <div className="text-[10px] text-slate-500 mt-1">Esses jogadores aparecem em todos os próximos jogos deste time.</div>
+      )}
     </Card>
+  );
+}
+
+/* Linha de jogador na tabela com contadores compactos */
+function PlayerRow({ player, rating, goals, assists, yellows, reds, onIncrement, onDecrement, onRename, onSetRating, onRemove }) {
+  const [draftName, setDraftName] = useState(player);
+  useEffect(() => { setDraftName(player); }, [player]);
+
+  return (
+    <tr className="border-t border-slate-800/40">
+      <td className="pr-1 py-1">
+        <input
+          value={draftName}
+          onChange={(e) => setDraftName(e.target.value)}
+          onBlur={() => onRename(draftName)}
+          className="w-full bg-transparent text-xs px-1 py-1 rounded border border-transparent hover:border-slate-700 focus:border-lime-400 outline-none"
+        />
+      </td>
+      <td className="px-0.5 py-1">
+        <Counter value={goals}    onPlus={() => onIncrement('goal')}    onMinus={() => onDecrement('goal')}    color="emerald" />
+      </td>
+      <td className="px-0.5 py-1">
+        <Counter value={assists}  onPlus={() => onIncrement('assist')}  onMinus={() => onDecrement('assist')}  color="sky" />
+      </td>
+      <td className="px-0.5 py-1">
+        <Counter value={yellows}  onPlus={() => onIncrement('yellow')}  onMinus={() => onDecrement('yellow')}  color="yellow" tight />
+      </td>
+      <td className="px-0.5 py-1">
+        <Counter value={reds}     onPlus={() => onIncrement('red')}     onMinus={() => onDecrement('red')}     color="red" tight />
+      </td>
+      <td className="px-0.5 py-1">
+        <input
+          type="number" step="0.1" min="0" max="10"
+          value={rating}
+          onChange={(e) => onSetRating(e.target.value)}
+          placeholder="—"
+          className="w-full bg-slate-950/40 border border-slate-800 focus:border-lime-400 rounded px-1 py-1 text-xs text-center tabular-nums font-bold outline-none"
+        />
+      </td>
+      <td className="py-1 text-center">
+        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 text-xs" title="Remover do time">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/* Contador compacto: clica no número incrementa, segura/shift decrementa.
+   Pra usabilidade mobile, dois botões minúsculos um em cima do outro. */
+function Counter({ value, onPlus, onMinus, color = 'slate', tight }) {
+  const colors = {
+    emerald: value > 0 ? 'text-emerald-300 bg-emerald-900/40 border-emerald-700/50' : 'text-slate-500 bg-slate-900/40 border-slate-800',
+    sky:     value > 0 ? 'text-sky-300 bg-sky-900/40 border-sky-700/50'             : 'text-slate-500 bg-slate-900/40 border-slate-800',
+    yellow:  value > 0 ? 'text-yellow-300 bg-yellow-900/40 border-yellow-700/50'    : 'text-slate-500 bg-slate-900/40 border-slate-800',
+    red:     value > 0 ? 'text-red-300 bg-red-900/40 border-red-700/50'             : 'text-slate-500 bg-slate-900/40 border-slate-800',
+    slate:                                                                            'text-slate-300 bg-slate-900/40 border-slate-800',
+  };
+  return (
+    <div className="flex items-center justify-center gap-0.5">
+      <button onClick={onMinus} disabled={value === 0} className="text-slate-500 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed text-xs leading-none w-4 h-5 flex items-center justify-center">−</button>
+      <span className={cls('inline-block w-6 text-center font-bold tabular-nums border rounded text-xs py-0.5', colors[color])}>
+        {value}
+      </span>
+      <button onClick={onPlus} className="text-slate-500 hover:text-lime-400 text-xs leading-none w-4 h-5 flex items-center justify-center">+</button>
+    </div>
   );
 }
 
@@ -1705,80 +1895,6 @@ function SuspensionWarnings({ state, teamId, players, upToStageKey }) {
       {suspended.map((s) => (
         <div key={s.name} className="text-red-200">🚫 {s.name} <span className="text-red-400">({s.reason})</span></div>
       ))}
-    </div>
-  );
-}
-
-function EventBtn({ icon, color, onClick, children }) {
-  const colors = {
-    emerald: 'bg-emerald-900/60 border-emerald-700 text-emerald-200 hover:bg-emerald-800',
-    sky:     'bg-sky-900/60 border-sky-700 text-sky-200 hover:bg-sky-800',
-    yellow:  'bg-yellow-900/40 border-yellow-700 text-yellow-200 hover:bg-yellow-800',
-    red:     'bg-red-900/60 border-red-700 text-red-200 hover:bg-red-800',
-  };
-  return (
-    <button onClick={onClick} className={cls('text-[10px] uppercase font-bold px-2 py-0.5 rounded border flex items-center gap-1', colors[color])}>
-      {icon}{children}
-    </button>
-  );
-}
-
-function EventRow({ event, players, onUpdate, onRemove }) {
-  return (
-    <div className="flex items-center gap-1.5 text-xs">
-      <EventTypeIcon type={event.type} />
-      <input
-        list="players-datalist"
-        value={event.playerName}
-        onChange={(ev) => onUpdate({ playerName: ev.target.value })}
-        placeholder="Jogador"
-        className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-      />
-      <datalist id="players-datalist">
-        {players.map((p) => <option key={p} value={p} />)}
-      </datalist>
-      <input
-        value={event.minute}
-        onChange={(ev) => onUpdate({ minute: ev.target.value })}
-        placeholder="'min"
-        className="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-center"
-      />
-      <button onClick={onRemove} className="text-slate-600 hover:text-red-400">
-        <X className="w-3 h-3" />
-      </button>
-    </div>
-  );
-}
-
-function EventTypeIcon({ type }) {
-  if (type === 'goal')   return <Goal className="w-3.5 h-3.5 text-emerald-400" />;
-  if (type === 'assist') return <Hand className="w-3.5 h-3.5 text-sky-400" />;
-  if (type === 'yellow') return <span className="inline-block w-2.5 h-3 bg-yellow-400 rounded-sm" />;
-  if (type === 'red')    return <span className="inline-block w-2.5 h-3 bg-red-500 rounded-sm" />;
-  return null;
-}
-
-function RatingRow({ name, rating, onRename, onChange, onRemove }) {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => { setDraft(name); }, [name]);
-  return (
-    <div className="flex items-center gap-1.5">
-      <input
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => onRename(draft.trim())}
-        className="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs"
-      />
-      <input
-        type="number" step="0.1" min="0" max="10"
-        value={rating ?? ''}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="—"
-        className="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-center tabular-nums font-bold"
-      />
-      <button onClick={onRemove} className="text-slate-600 hover:text-red-400">
-        <X className="w-3 h-3" />
-      </button>
     </div>
   );
 }
@@ -2002,7 +2118,7 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
           <span className={cls('truncate', homeWon && 'font-bold text-emerald-200', undefined1 && 'italic text-slate-600')}>
             {home?.name || 'A definir'}
           </span>
-          {home?.owner && <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />}
+          {home?.owner && <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />}
         </div>
         <span className={cls('font-mono font-bold tabular-nums', homeWon ? 'text-emerald-300' : 'text-slate-300')}>
           {homeDisplay}
@@ -2023,7 +2139,7 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
           <span className={cls('truncate', awayWon && 'font-bold text-emerald-200', undefined2 && 'italic text-slate-600')}>
             {away?.name || 'A definir'}
           </span>
-          {away?.owner && <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />}
+          {away?.owner && <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />}
         </div>
         <span className={cls('font-mono font-bold tabular-nums', awayWon ? 'text-emerald-300' : 'text-slate-300')}>
           {awayDisplay}
@@ -2181,7 +2297,7 @@ function TeamStatsList({ title, list, render, state }) {
               <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
               <span className="text-sm">{t.flag}</span>
               <span className="flex-1 truncate font-medium">{t.name}</span>
-              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />
+              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
               <div className="min-w-[60px] text-right">{render(t)}</div>
             </div>
           ))}
