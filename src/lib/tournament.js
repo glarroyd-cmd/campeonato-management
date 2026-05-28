@@ -599,12 +599,14 @@ function getKnockoutChain(format) {
 /* Gera os matches da fase de mata-mata.
    Para formatos com grupos: usa as classificações resolvidas em slotToTeam.
    Para mata-mata direto: usa os times ordenados (com seeding fixo ou random).
-   rules.knockoutReturn => ida e volta no mata-mata. */
+   rules.knockoutReturn => ida e volta no mata-mata.
+   
+   IMPORTANTE: aceita estado com fase de grupos PARCIAL — slots que não puderem
+   ser preenchidos ficam null (e o app re-tenta quando os jogos forem atualizados). */
 export function makeKnockoutMatches(state) {
   const format = getFormat(state.formatId);
   const rules = state.rules;
   const matches = [];
-  let mid = 0;
   const stages = format.knockoutStages;
 
   let firstStageSlots; // teamId em cada slot do primeiro stage
@@ -615,8 +617,8 @@ export function makeKnockoutMatches(state) {
     }));
     const slotToTeam = {};
     for (const s of standings) {
-      slotToTeam[`1${s.letter}`] = s.rows[0]?.id;
-      slotToTeam[`2${s.letter}`] = s.rows[1]?.id;
+      slotToTeam[`1${s.letter}`] = s.rows[0]?.id || null;
+      slotToTeam[`2${s.letter}`] = s.rows[1]?.id || null;
     }
     /* Melhores 3ºs */
     if (format.bestThirds > 0) {
@@ -629,34 +631,39 @@ export function makeKnockoutMatches(state) {
       const firstStagePattern = getFirstKnockoutPattern(format).pattern;
       firstStageSlots = firstStagePattern.map((p) => {
         const resolve = (slotName) => {
-          if (slotName === '3rd') return bestThirds[i++]?.id;
-          return slotToTeam[slotName];
+          if (slotName === '3rd') return bestThirds[i++]?.id || null;
+          return slotToTeam[slotName] || null;
         };
         return { home: resolve(p.home), away: resolve(p.away) };
       });
     } else {
       const firstStagePattern = getFirstKnockoutPattern(format).pattern;
       firstStageSlots = firstStagePattern.map((p) => ({
-        home: slotToTeam[p.home], away: slotToTeam[p.away],
+        home: slotToTeam[p.home] || null, away: slotToTeam[p.away] || null,
       }));
     }
 
-    /* Random draw: embaralha todos os times do primeiro stage */
+    /* Random draw: embaralha todos os times do primeiro stage,
+       tentando evitar pares de mesmo dono */
     if (rules.drawMode === 'random') {
-      const allTeams = firstStageSlots.flatMap((s) => [s.home, s.away]);
-      shuffle(allTeams);
+      const allTeams = firstStageSlots.flatMap((s) => [s.home, s.away]).filter(Boolean);
+      const teamOwnerOf = (id) => getTeamById(state, id)?.owner || null;
+      const shuffled = shuffleAvoidingSameOwner(allTeams, teamOwnerOf);
       firstStageSlots = [];
-      for (let i = 0; i < allTeams.length; i += 2) {
-        firstStageSlots.push({ home: allTeams[i], away: allTeams[i + 1] });
+      for (let i = 0; i < shuffled.length; i += 2) {
+        firstStageSlots.push({ home: shuffled[i], away: shuffled[i + 1] || null });
       }
     }
   } else {
     /* Mata-mata direto: usa koTeams */
     let teamsList = (state.koTeams || []).map((t) => t.id);
-    if (rules.drawMode === 'random') shuffle(teamsList);
+    if (rules.drawMode === 'random') {
+      const teamOwnerOf = (id) => getTeamById(state, id)?.owner || null;
+      teamsList = shuffleAvoidingSameOwner(teamsList, teamOwnerOf);
+    }
     firstStageSlots = [];
     for (let i = 0; i < teamsList.length; i += 2) {
-      firstStageSlots.push({ home: teamsList[i], away: teamsList[i + 1] });
+      firstStageSlots.push({ home: teamsList[i], away: teamsList[i + 1] || null });
     }
   }
 
@@ -678,7 +685,7 @@ export function makeKnockoutMatches(state) {
         played: false,
         events: [],
         ratings: {},
-        extra: null, // null | 'et' | 'pen'
+        extra: null,
         penaltyWinner: null,
       });
     }
@@ -693,7 +700,6 @@ export function makeKnockoutMatches(state) {
     const chain = getKnockoutChain(format);
     const count = chain.find((c) => c.stage === stage)?.count || 1;
     for (let idx = 0; idx < count; idx++) {
-      /* Para mata-mata: vencedor do match prevStage idx*2 vs idx*2+1 */
       const legs = rules.knockoutReturn ? 2 : 1;
       const feedHomeIdx = idx * 2;
       const feedAwayIdx = idx * 2 + 1;
@@ -720,7 +726,6 @@ export function makeKnockoutMatches(state) {
 
   /* Jogo de 3º lugar — perdedores das semis */
   if (format.hasThirdPlace) {
-    const legs = 1; // 3º lugar sempre jogo único
     matches.push({
       id: `k-third-1-l1`,
       stage: 'third',
@@ -741,12 +746,135 @@ export function makeKnockoutMatches(state) {
   return matches;
 }
 
+/* Recalcula os times dos slots do primeiro stage do KO com base nas standings ATUAIS.
+   Só sobrescreve slots cujos jogos correspondentes AINDA NÃO foram jogados — pra não
+   destruir progresso. Retorna { matches, changed }. */
+export function recalcKnockoutSeeding(state) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return { matches: state.matches, changed: false };
+  if (state.rules?.drawMode === 'random') {
+    /* No modo aleatório, o sorteio é feito uma vez só — não re-shuffles */
+    return { matches: state.matches, changed: false };
+  }
+
+  const firstStage = format.knockoutStages[0];
+  const koFirstStage = state.matches.filter((m) => m.stage === firstStage && !m.isExtra);
+  if (koFirstStage.length === 0) return { matches: state.matches, changed: false };
+
+  /* Calcula slots ideais agora */
+  const standings = format.initialGroups.map((g) => ({
+    letter: g.letter, rows: computeGroupStanding(state, g.letter),
+  }));
+  const slotToTeam = {};
+  for (const s of standings) {
+    slotToTeam[`1${s.letter}`] = s.rows[0]?.id || null;
+    slotToTeam[`2${s.letter}`] = s.rows[1]?.id || null;
+  }
+  let firstStageSlots;
+  if (format.bestThirds > 0) {
+    const thirds = standings
+      .map((s) => ({ ...s.rows[2], group: s.letter }))
+      .filter((t) => t && t.id)
+      .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
+    const bestThirds = thirds.slice(0, format.bestThirds);
+    let i = 0;
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    firstStageSlots = firstStagePattern.map((p) => {
+      const resolve = (slotName) => {
+        if (slotName === '3rd') return bestThirds[i++]?.id || null;
+        return slotToTeam[slotName] || null;
+      };
+      return { home: resolve(p.home), away: resolve(p.away) };
+    });
+  } else {
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    firstStageSlots = firstStagePattern.map((p) => ({
+      home: slotToTeam[p.home] || null, away: slotToTeam[p.away] || null,
+    }));
+  }
+
+  let changed = false;
+  const newMatches = state.matches.map((m) => {
+    if (m.stage !== firstStage || m.isExtra) return m;
+    const slot = firstStageSlots[m.koIndex];
+    if (!slot) return m;
+    /* Para legs 1 vs 2 — leg 1 usa home original, leg 2 invertido */
+    const isLeg2 = m.leg === 2;
+    const expectedHome = isLeg2 ? slot.away : slot.home;
+    const expectedAway = isLeg2 ? slot.home : slot.away;
+    /* Só sobrescreve se este match específico ainda NÃO foi jogado */
+    if (m.played) return m;
+    if (m.homeTeamId !== expectedHome || m.awayTeamId !== expectedAway) {
+      changed = true;
+      return { ...m, homeTeamId: expectedHome, awayTeamId: expectedAway };
+    }
+    return m;
+  });
+  return { matches: newMatches, changed };
+}
+
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+/* Shuffle que tenta evitar pares de mesmo dono.
+   Faz vários shuffles e fica com o que tiver menos conflitos.
+   Depois aplica greedy swaps pra reduzir os restantes. */
+function shuffleAvoidingSameOwner(teamIds, getOwner) {
+  if (teamIds.length < 2) return [...teamIds];
+  const countConflicts = (arr) => {
+    let c = 0;
+    for (let i = 0; i < arr.length; i += 2) {
+      const o1 = getOwner(arr[i]);
+      const o2 = getOwner(arr[i + 1]);
+      if (o1 && o2 && o1 === o2) c++;
+    }
+    return c;
+  };
+  let best = [...teamIds];
+  let bestConflicts = countConflicts(best);
+  for (let attempt = 0; attempt < 50 && bestConflicts > 0; attempt++) {
+    const trial = shuffle([...teamIds]);
+    const c = countConflicts(trial);
+    if (c < bestConflicts) {
+      best = trial;
+      bestConflicts = c;
+    }
+  }
+  /* Greedy swaps: pra cada conflito, tenta trocar com outro par sem criar novo conflito */
+  if (bestConflicts > 0) {
+    for (let i = 0; i < best.length; i += 2) {
+      const o1 = getOwner(best[i]);
+      const o2 = getOwner(best[i + 1]);
+      if (!o1 || !o2 || o1 !== o2) continue;
+      /* tenta trocar best[i+1] com algum elemento de outro par sem conflito */
+      for (let j = 0; j < best.length; j += 2) {
+        if (j === i) continue;
+        const jo1 = getOwner(best[j]);
+        const jo2 = getOwner(best[j + 1]);
+        if (jo1 === jo2) continue; // outro par tb com conflito? pula
+        /* tenta trocar best[i+1] <-> best[j] */
+        const ni = getOwner(best[i]) === getOwner(best[j]); // novo i tem conflito?
+        const nj = getOwner(best[i + 1]) === getOwner(best[j + 1]); // novo j tem conflito?
+        if (!ni && !nj) {
+          [best[i + 1], best[j]] = [best[j], best[i + 1]];
+          break;
+        }
+        /* tenta trocar best[i+1] <-> best[j+1] */
+        const ni2 = getOwner(best[i]) === getOwner(best[j + 1]);
+        const nj2 = getOwner(best[j]) === getOwner(best[i + 1]);
+        if (!ni2 && !nj2) {
+          [best[i + 1], best[j + 1]] = [best[j + 1], best[i + 1]];
+          break;
+        }
+      }
+    }
+  }
+  return best;
 }
 
 /* ============================================================
@@ -931,6 +1059,80 @@ export function computePlayerStats(state) {
     }
   }
   return [...map.values()];
+}
+
+/* ============================================================
+   ESTATÍSTICAS DE TIMES E DONOS
+   ============================================================ */
+export function computeTeamStats(state) {
+  const teamMap = new Map();
+  const ensure = (teamId) => {
+    if (!teamMap.has(teamId)) {
+      const team = getTeamById(state, teamId);
+      teamMap.set(teamId, {
+        teamId,
+        name: team?.name || '',
+        flag: team?.flag || '',
+        owner: team?.owner || null,
+        P: 0, V: 0, E: 0, D: 0, GP: 0, GC: 0, SG: 0, Pts: 0,
+        yellows: 0, reds: 0,
+      });
+    }
+    return teamMap.get(teamId);
+  };
+
+  for (const m of state.matches) {
+    if (!m.played || m.autoPlayed) continue;
+    if (!m.homeTeamId || !m.awayTeamId) continue;
+    const h = ensure(m.homeTeamId);
+    const a = ensure(m.awayTeamId);
+    h.P++; a.P++;
+    h.GP += m.homeScore; h.GC += m.awayScore;
+    a.GP += m.awayScore; a.GC += m.homeScore;
+    if (m.homeScore > m.awayScore)      { h.V++; a.D++; h.Pts += 3; }
+    else if (m.homeScore < m.awayScore) { a.V++; h.D++; a.Pts += 3; }
+    else                                { h.E++; a.E++; h.Pts += 1; a.Pts += 1; }
+
+    for (const ev of (m.events || [])) {
+      const t = teamMap.get(ev.teamId);
+      if (!t) continue;
+      if (ev.type === 'yellow') t.yellows++;
+      else if (ev.type === 'red') t.reds++;
+    }
+  }
+  const rows = [...teamMap.values()];
+  rows.forEach((r) => {
+    r.SG = r.GP - r.GC;
+    r.winPct = r.P > 0 ? Math.round((r.Pts / (r.P * 3)) * 100) : 0;
+  });
+  return rows;
+}
+
+export function computeOwnerStats(state) {
+  const own = {
+    p1: { id: 'p1', name: state.player1Name, P: 0, V: 0, E: 0, D: 0, GP: 0, GC: 0, SG: 0, Pts: 0, yellows: 0, reds: 0, teams: 0 },
+    p2: { id: 'p2', name: state.player2Name, P: 0, V: 0, E: 0, D: 0, GP: 0, GC: 0, SG: 0, Pts: 0, yellows: 0, reds: 0, teams: 0 },
+  };
+  const teamStats = computeTeamStats(state);
+  for (const t of teamStats) {
+    if (!t.owner) continue;
+    const o = own[t.owner];
+    if (!o) continue;
+    o.P += t.P; o.V += t.V; o.E += t.E; o.D += t.D;
+    o.GP += t.GP; o.GC += t.GC;
+    o.Pts += t.Pts;
+    o.yellows += t.yellows; o.reds += t.reds;
+  }
+  /* Conta times atribuídos */
+  for (const t of getAllTeams(state)) {
+    if (t.owner === 'p1') own.p1.teams++;
+    else if (t.owner === 'p2') own.p2.teams++;
+  }
+  own.p1.SG = own.p1.GP - own.p1.GC;
+  own.p2.SG = own.p2.GP - own.p2.GC;
+  own.p1.winPct = own.p1.P > 0 ? Math.round((own.p1.Pts / (own.p1.P * 3)) * 100) : 0;
+  own.p2.winPct = own.p2.P > 0 ? Math.round((own.p2.Pts / (own.p2.P * 3)) * 100) : 0;
+  return [own.p1, own.p2];
 }
 
 /* ============================================================
