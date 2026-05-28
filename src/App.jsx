@@ -255,17 +255,21 @@ export default function App() {
 
   const allTeams = getAllTeams(state);
 
+  /* Garante que view esteja numa tab válida depois do wizard */
+  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats'];
+  const safeView = validTabs.includes(view) ? view : 'groups';
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <Header state={state} view={view} setView={setView} code={code} onLeave={leave} />
+      <Header state={state} view={safeView} setView={setView} code={code} onLeave={leave} />
       <main className="max-w-7xl mx-auto px-4 py-6 pb-24">
-        {view === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} />}
-        {view === 'matches'  && <MatchesView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
-        {view === 'match' && activeMatchId && (
+        {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} />}
+        {safeView === 'matches'  && <MatchesView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
+        {safeView === 'match' && activeMatchId && (
           <MatchDetailView state={state} matchId={activeMatchId} updateMatches={updateMatches} update={update} allTeams={allTeams} onBack={() => setView('matches')} openMatch={(id) => setActiveMatchId(id)} />
         )}
-        {view === 'knockout' && <KnockoutView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
-        {view === 'stats'    && <StatsView state={state} allTeams={allTeams} />}
+        {safeView === 'knockout' && <KnockoutView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
+        {safeView === 'stats'    && <StatsView state={state} allTeams={allTeams} />}
       </main>
     </div>
   );
@@ -1383,7 +1387,7 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
 
       <Card className="p-4">
         <div className="text-xs uppercase tracking-wider text-slate-500 mb-3">{stageLabel}{legLabel}</div>
-        <ScoreEntry match={match} home={home} away={away} onChange={setScore} />
+        <ScoreEntry match={match} home={home} away={away} onChange={setScore} p1Name={state.player1Name} p2Name={state.player2Name} />
       </Card>
 
       {isKo && <KnockoutMatchExtras state={state} match={match} home={home} away={away} update={update} updateMatches={updateMatches} />}
@@ -1414,10 +1418,10 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
   );
 }
 
-function ScoreEntry({ match, home, away, onChange }) {
+function ScoreEntry({ match, home, away, onChange, p1Name, p2Name }) {
   return (
     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-      <TeamHeader team={home} align="right" p1Name={state.player1Name} p2Name={state.player2Name} />
+      <TeamHeader team={home} align="right" p1Name={p1Name} p2Name={p2Name} />
       <div className="flex items-center gap-1">
         <input
           type="number" min="0"
@@ -1433,7 +1437,7 @@ function ScoreEntry({ match, home, away, onChange }) {
           className="w-14 p-2 text-center text-2xl font-black bg-slate-900 border-2 border-slate-700 focus:border-lime-400 rounded outline-none tabular-nums"
         />
       </div>
-      <TeamHeader team={away} align="left" p1Name={state.player1Name} p2Name={state.player2Name} />
+      <TeamHeader team={away} align="left" p1Name={p1Name} p2Name={p2Name} />
     </div>
   );
 }
@@ -1881,91 +1885,166 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
 }
 
 function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
-  /* Agrupa por stage */
-  const stages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
-  const stageOrder = ['r32', 'r16', 'qf', 'sf', 'third', 'final'];
-  stages.sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
+  /* Stages do bracket principal (exclui third lugar, mostra separado) */
+  const allStages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
+  const stageOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
+  const mainStages = allStages.filter((s) => s !== 'third').sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
+  const hasThird = allStages.includes('third');
 
-  /* Confrontos agrupados por (stage, koIndex) */
-  const groupedByConfront = {};
-  for (const m of koMatches) {
-    if (m.isExtra) continue;
-    const key = `${m.stage}|${m.koIndex}`;
-    if (!groupedByConfront[key]) groupedByConfront[key] = [];
-    groupedByConfront[key].push(m);
-  }
+  const groupByConfront = (stage) => {
+    const arr = koMatches.filter((m) => m.stage === stage && !m.isExtra);
+    const grouped = {};
+    for (const m of arr) {
+      const key = m.koIndex;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(m);
+    }
+    return Object.entries(grouped).sort(([a], [b]) => Number(a) - Number(b)).map(([, legs]) => legs);
+  };
+
+  /* Altura mínima dinâmica baseada no maior stage (cada confronto ~ 90px) */
+  const firstStageCount = groupByConfront(mainStages[0])?.length || 0;
+  const minHeight = Math.max(420, firstStageCount * 86);
 
   return (
     <div className="space-y-6">
-      {stages.map((stage) => {
-        const stageConfronts = Object.entries(groupedByConfront).filter(([k]) => k.startsWith(`${stage}|`));
-        stageConfronts.sort(([a], [b]) => Number(a.split('|')[1]) - Number(b.split('|')[1]));
-        return (
-          <div key={stage}>
-            <h3 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3">{STAGE_LABELS[stage] || stage}</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {stageConfronts.map(([key, legs]) => (
-                <KnockoutConfrontCard key={key} state={state} legs={legs} openMatch={openMatch} />
-              ))}
+      {/* Header com nomes das fases (sticky no topo do scroll) */}
+      <div className="overflow-x-auto pb-2">
+        <div className="inline-flex gap-3 min-w-full">
+          {mainStages.map((stage) => (
+            <div key={stage + '-h'} className="flex-shrink-0 w-[210px] text-center">
+              <div className="text-xs font-bold uppercase tracking-wider text-lime-400 pb-2 border-b border-slate-800">
+                {STAGE_LABELS[stage] || stage}
+              </div>
             </div>
+          ))}
+        </div>
+        <div className="inline-flex gap-3 mt-2 min-w-full" style={{ minHeight: `${minHeight}px` }}>
+          {mainStages.map((stage) => {
+            const confronts = groupByConfront(stage);
+            return (
+              <div key={stage} className="flex-shrink-0 w-[210px] flex flex-col justify-around gap-2">
+                {confronts.map((legs, cIdx) => (
+                  <KnockoutConfrontCard key={`${stage}-${cIdx}`} state={state} legs={legs} openMatch={openMatch} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3º Lugar separado */}
+      {hasThird && (
+        <div>
+          <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2 flex items-center gap-2">
+            <Award className="w-4 h-4" /> Disputa de 3º lugar
+          </h3>
+          <div className="max-w-xs">
+            {groupByConfront('third').map((legs, cIdx) => (
+              <KnockoutConfrontCard key={`third-${cIdx}`} state={state} legs={legs} openMatch={openMatch} />
+            ))}
           </div>
-        );
-      })}
+        </div>
+      )}
     </div>
   );
 }
 
 function KnockoutConfrontCard({ state, legs, openMatch }) {
-  /* legs[0] sempre é o leg 1 */
   legs = [...legs].sort((a, b) => a.leg - b.leg);
   const sample = legs[0];
   const home = getTeamById(state, sample.homeTeamId);
   const away = getTeamById(state, sample.awayTeamId);
-  if (!home || !away) {
-    return <Card className="p-3 text-center text-slate-600 text-xs italic">Aguardando definição...</Card>;
+  const sameOwner = home?.owner && away?.owner && home.owner === away.owner;
+  const outcome = getMatchOutcome(state.matches, sample.stage, sample.koIndex);
+  const isMultiLeg = sample.totalLegs > 1;
+  const etMatch = state.matches.find((m) => m.stage === sample.stage && m.koIndex === sample.koIndex && m.isExtra);
+
+  /* Determina placar exibido por time (agregado ou simples) */
+  let homeDisplay = '—';
+  let awayDisplay = '—';
+  if (legs.every((m) => m.played)) {
+    if (isMultiLeg) {
+      homeDisplay = String(outcome.aggA ?? 0);
+      awayDisplay = String(outcome.aggB ?? 0);
+    } else {
+      homeDisplay = String(sample.homeScore ?? 0);
+      awayDisplay = String(sample.awayScore ?? 0);
+    }
   }
 
-  const sameOwner = home.owner && away.owner && home.owner === away.owner;
-  const outcome = getMatchOutcome(state.matches, sample.stage, sample.koIndex);
+  const homeWon = outcome.decided && outcome.winner === sample.homeTeamId;
+  const awayWon = outcome.decided && outcome.winner === sample.awayTeamId;
+  const undefined1 = !home;
+  const undefined2 = !away;
 
   return (
-    <Card className={cls('p-2', sameOwner && 'border-amber-700/60 bg-amber-900/10')}>
+    <Card className={cls(
+      'overflow-hidden text-xs',
+      sameOwner && 'border-amber-700/60'
+    )}>
       {sameOwner && (
-        <div className="text-[10px] text-amber-400 font-bold mb-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Mesmo dono</div>
-      )}
-      {legs.map((m) => (
-        <button key={m.id} onClick={() => openMatch(m.id)} className="w-full text-left p-1.5 mb-1 rounded hover:bg-slate-900/80 transition">
-          {m.totalLegs > 1 && (
-            <div className="text-[10px] uppercase text-slate-500 mb-0.5">{m.leg === 1 ? 'Ida' : 'Volta'}</div>
-          )}
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1 text-xs">
-            <div className="text-right truncate">{getTeamById(state, m.homeTeamId)?.flag} {getTeamById(state, m.homeTeamId)?.name}</div>
-            <div className="font-mono tabular-nums px-1 font-bold">{m.played ? `${m.homeScore}×${m.awayScore}` : '—'}</div>
-            <div className="truncate">{getTeamById(state, m.awayTeamId)?.flag} {getTeamById(state, m.awayTeamId)?.name}</div>
-          </div>
-        </button>
-      ))}
-      {/* prorrogação */}
-      {state.matches.filter((m) => m.stage === sample.stage && m.koIndex === sample.koIndex && m.isExtra).map((et) => (
-        <button key={et.id} onClick={() => openMatch(et.id)} className="w-full text-left p-1.5 mb-1 rounded bg-amber-900/20 hover:bg-amber-900/40 transition border border-amber-800/50">
-          <div className="text-[10px] uppercase text-amber-300 mb-0.5 flex items-center gap-1"><Zap className="w-2.5 h-2.5" />Prorrogação{et.penaltyWinner && ' + pênaltis'}</div>
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1 text-xs">
-            <div className="text-right truncate">{getTeamById(state, et.homeTeamId)?.flag} {getTeamById(state, et.homeTeamId)?.name}</div>
-            <div className="font-mono tabular-nums px-1 font-bold">{et.played ? `${et.homeScore}×${et.awayScore}` : '—'}</div>
-            <div className="truncate">{getTeamById(state, et.awayTeamId)?.flag} {getTeamById(state, et.awayTeamId)?.name}</div>
-          </div>
-        </button>
-      ))}
-      {/* Resultado agregado e vencedor */}
-      {legs[0].totalLegs > 1 && legs.every((m) => m.played) && (
-        <div className="mt-1 text-[10px] text-slate-500 text-center">
-          Agregado {outcome.aggA ?? 0}×{outcome.aggB ?? 0}
+        <div className="px-2 py-0.5 bg-amber-900/30 text-[9px] text-amber-300 font-bold flex items-center gap-1">
+          <AlertTriangle className="w-2.5 h-2.5" />Mesmo dono
         </div>
       )}
-      {outcome.decided && (
-        <div className="mt-1 text-[10px] text-lime-400 text-center flex items-center justify-center gap-1">
-          <Trophy className="w-3 h-3" />
-          {getTeamById(state, outcome.winner)?.name} {outcome.viaPenalties && '(pênaltis)'}
+      {/* Linha do time da casa */}
+      <button
+        onClick={() => openMatch(legs[0].id)}
+        className={cls(
+          'w-full grid grid-cols-[1fr_auto] items-center gap-1 px-2 py-1.5 hover:bg-slate-800/60 transition',
+          homeWon && 'bg-emerald-950/40',
+          !legs[0].played && 'opacity-90'
+        )}
+      >
+        <div className="flex items-center gap-1.5 truncate min-w-0">
+          <span>{home?.flag || '?'}</span>
+          <span className={cls('truncate', homeWon && 'font-bold text-emerald-200', undefined1 && 'italic text-slate-600')}>
+            {home?.name || 'A definir'}
+          </span>
+          {home?.owner && <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />}
+        </div>
+        <span className={cls('font-mono font-bold tabular-nums', homeWon ? 'text-emerald-300' : 'text-slate-300')}>
+          {homeDisplay}
+        </span>
+      </button>
+
+      {/* Linha do visitante */}
+      <button
+        onClick={() => openMatch(legs[isMultiLeg ? 1 : 0].id)}
+        className={cls(
+          'w-full grid grid-cols-[1fr_auto] items-center gap-1 px-2 py-1.5 hover:bg-slate-800/60 transition border-t border-slate-800',
+          awayWon && 'bg-emerald-950/40',
+          !legs[0].played && 'opacity-90'
+        )}
+      >
+        <div className="flex items-center gap-1.5 truncate min-w-0">
+          <span>{away?.flag || '?'}</span>
+          <span className={cls('truncate', awayWon && 'font-bold text-emerald-200', undefined2 && 'italic text-slate-600')}>
+            {away?.name || 'A definir'}
+          </span>
+          {away?.owner && <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} size="xs" />}
+        </div>
+        <span className={cls('font-mono font-bold tabular-nums', awayWon ? 'text-emerald-300' : 'text-slate-300')}>
+          {awayDisplay}
+        </span>
+      </button>
+
+      {/* Linha de meta-info: prorrogação, ida/volta detalhada, pênaltis */}
+      {(isMultiLeg || etMatch || outcome.viaPenalties) && (
+        <div className="px-2 py-1 bg-slate-950/60 border-t border-slate-800 text-[10px] text-slate-500 text-center space-y-0.5">
+          {isMultiLeg && legs.every((m) => m.played) && (
+            <div>
+              Ida: {legs[0].homeScore}-{legs[0].awayScore} · Volta: {legs[1].homeScore}-{legs[1].awayScore}
+            </div>
+          )}
+          {etMatch && (
+            <button onClick={() => openMatch(etMatch.id)} className="text-amber-400 hover:text-amber-300 flex items-center gap-1 justify-center w-full">
+              <Zap className="w-2.5 h-2.5" />
+              Prorrogação {etMatch.played ? `${etMatch.homeScore}-${etMatch.awayScore}` : '(jogar)'}
+              {outcome.viaPenalties && ' + pênaltis'}
+            </button>
+          )}
         </div>
       )}
     </Card>
