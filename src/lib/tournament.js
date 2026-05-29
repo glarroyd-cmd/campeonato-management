@@ -1065,6 +1065,24 @@ export function computePlayerStats(state) {
 }
 
 /* ============================================================
+   MELHORES 3ºs LUGARES (pra Copa 2026 e Eurocopa)
+   ============================================================ */
+export function computeBestThirds(state) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups || !format.bestThirds || format.bestThirds === 0) return [];
+  const standings = format.initialGroups.map((g) => ({
+    letter: g.letter, rows: computeGroupStanding(state, g.letter),
+  }));
+  const tiebreakers = state.rules?.tiebreakers || DEFAULT_TIEBREAKERS;
+  const playedMatches = state.matches.filter((m) => m.played);
+  const thirds = standings
+    .map((s) => s.rows[2] ? { ...s.rows[2], group: s.letter } : null)
+    .filter(Boolean)
+    .sort(compareWithTiebreakers(state, playedMatches, tiebreakers));
+  return thirds.map((t, i) => ({ ...t, rank: i + 1, qualified: i < format.bestThirds }));
+}
+
+/* ============================================================
    ESTATÍSTICAS DE TIMES E DONOS
    ============================================================ */
 export function computeTeamStats(state) {
@@ -1136,6 +1154,264 @@ export function computeOwnerStats(state) {
   own.p1.winPct = own.p1.P > 0 ? Math.round((own.p1.Pts / (own.p1.P * 3)) * 100) : 0;
   own.p2.winPct = own.p2.P > 0 ? Math.round((own.p2.Pts / (own.p2.P * 3)) * 100) : 0;
   return [own.p1, own.p2];
+}
+
+/* ============================================================
+   HEAD-TO-HEAD DOS JOGADORES
+   Soma todos os jogos jogados (não autoPlayed) onde times de
+   donos diferentes se enfrentaram.
+   ============================================================ */
+export function computeHeadToHead(state) {
+  const result = {
+    p1Wins: 0, p2Wins: 0, draws: 0,
+    p1Goals: 0, p2Goals: 0,
+    totalMatches: 0,
+  };
+  for (const m of state.matches) {
+    if (!m.played || m.autoPlayed) continue;
+    if (!m.homeTeamId || !m.awayTeamId) continue;
+    const home = getTeamById(state, m.homeTeamId);
+    const away = getTeamById(state, m.awayTeamId);
+    if (!home?.owner || !away?.owner) continue;
+    if (home.owner === away.owner) continue;
+    result.totalMatches++;
+    const p1IsHome = home.owner === 'p1';
+    const p1Score = p1IsHome ? m.homeScore : m.awayScore;
+    const p2Score = p1IsHome ? m.awayScore : m.homeScore;
+    result.p1Goals += p1Score;
+    result.p2Goals += p2Score;
+    if (p1Score > p2Score) result.p1Wins++;
+    else if (p2Score > p1Score) result.p2Wins++;
+    else result.draws++;
+  }
+  return result;
+}
+
+/* ============================================================
+   PRÓXIMOS JOGOS PENDENTES (em ordem cronológica do torneio)
+   ============================================================ */
+export function getUpcomingMatches(state, limit = 5) {
+  const pending = state.matches.filter((m) =>
+    !m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId && !m.isExtra
+  );
+  pending.sort((a, b) => {
+    const aIdx = STAGE_ORDER_INDEX[matchStageKey(a)] ?? 999;
+    const bIdx = STAGE_ORDER_INDEX[matchStageKey(b)] ?? 999;
+    if (aIdx !== bIdx) return aIdx - bIdx;
+    if (a.stage === 'group') {
+      if (a.group !== b.group) return (a.group || '').localeCompare(b.group || '');
+      return a.id.localeCompare(b.id);
+    }
+    if ((a.koIndex ?? 0) !== (b.koIndex ?? 0)) return (a.koIndex ?? 0) - (b.koIndex ?? 0);
+    if ((a.leg ?? 1) !== (b.leg ?? 1)) return (a.leg ?? 1) - (b.leg ?? 1);
+    return 0;
+  });
+  return pending.slice(0, limit);
+}
+
+/* ============================================================
+   JOGADORES DESTAQUE DE UM TIME (para "ficar de olho")
+   Ranqueia os jogadores históricos pelo desempenho até agora.
+   Score = média × 10 + gols × 3 + assists × 1.5
+   ============================================================ */
+export function getNotablePlayersForTeam(state, teamId, limit = 3) {
+  const stats = computePlayerStats(state).filter((s) => s.teamId === teamId);
+  if (stats.length === 0) return [];
+  const ranked = stats
+    .map((s) => {
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const score = (avg * 10) + (s.goals * 3) + (s.assists * 1.5);
+      return { ...s, avg, score };
+    })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return ranked.slice(0, limit);
+}
+
+/* ============================================================
+   RECORDES DO TORNEIO
+   ============================================================ */
+export function computeTournamentRecords(state) {
+  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
+  if (real.length === 0) return null;
+
+  /* Maior goleada (maior diferença) */
+  let biggestRout = null;
+  let mostGoalsMatch = null;
+  let mostCardsMatch = null;
+  for (const m of real) {
+    const diff = Math.abs(m.homeScore - m.awayScore);
+    const total = m.homeScore + m.awayScore;
+    const cards = (m.events || []).filter((e) => e.type === 'yellow' || e.type === 'red').length;
+    if (!biggestRout || diff > biggestRout.diff) biggestRout = { match: m, diff, total };
+    if (!mostGoalsMatch || total > mostGoalsMatch.total) mostGoalsMatch = { match: m, total };
+    if (cards > 0 && (!mostCardsMatch || cards > mostCardsMatch.cards)) mostCardsMatch = { match: m, cards };
+  }
+
+  /* Mais gols por jogador num jogo só */
+  let bestSoloPerformance = null;
+  for (const m of real) {
+    const goalsByPlayer = {};
+    for (const ev of (m.events || [])) {
+      if (ev.type !== 'goal' || !ev.playerName) continue;
+      const k = `${ev.teamId}|${ev.playerName}`;
+      goalsByPlayer[k] = (goalsByPlayer[k] || 0) + 1;
+    }
+    for (const [k, n] of Object.entries(goalsByPlayer)) {
+      if (!bestSoloPerformance || n > bestSoloPerformance.goals) {
+        const [teamId, playerName] = k.split('|');
+        bestSoloPerformance = { match: m, teamId, playerName, goals: n };
+      }
+    }
+  }
+
+  /* Maior nota individual */
+  let bestRating = null;
+  for (const m of real) {
+    for (const teamId of Object.keys(m.ratings || {})) {
+      for (const [pname, rating] of Object.entries(m.ratings[teamId] || {})) {
+        const r = parseFloat(rating);
+        if (isNaN(r)) continue;
+        if (!bestRating || r > bestRating.rating) {
+          bestRating = { match: m, teamId, playerName: pname, rating: r };
+        }
+      }
+    }
+  }
+
+  return { biggestRout, mostGoalsMatch, mostCardsMatch, bestSoloPerformance, bestRating };
+}
+
+/* ============================================================
+   CAMINHO DO CAMPEÃO
+   Retorna lista de jogos do time campeão em ordem cronológica.
+   ============================================================ */
+export function getChampionPath(state) {
+  const champion = getChampion(state);
+  if (!champion) return null;
+  const championMatches = state.matches
+    .filter((m) => m.played && !m.autoPlayed && (m.homeTeamId === champion.id || m.awayTeamId === champion.id))
+    .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+  return { champion, matches: championMatches };
+}
+
+/* ============================================================
+   POWER RANKING DE TIMES
+   Score unificado considerando aproveitamento, saldo, e fase
+   máxima alcançada no mata-mata.
+   ============================================================ */
+export function computePowerRankingTeams(state) {
+  const teamStats = computeTeamStats(state);
+  /* Identifica a fase máxima atingida por cada time no mata-mata */
+  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const champ = getChampion(state);
+  return teamStats
+    .filter((t) => t.P > 0)
+    .map((t) => {
+      const winPct = t.P > 0 ? t.Pts / (t.P * 3) : 0;
+      const stageBonus = (maxStageByTeam[t.teamId] ?? 0) * 4;
+      const isChampion = champ?.id === t.teamId;
+      const score = (winPct * 30) + (t.SG * 1.5) + stageBonus + (isChampion ? 10 : 0);
+      return { ...t, stageReached: maxStageByTeam[t.teamId] ?? 0, isChampion, powerScore: score };
+    })
+    .sort((a, b) => b.powerScore - a.powerScore);
+}
+
+/* ============================================================
+   POWER RANKING DE JOGADORES EM CAMPO
+   Combina notas, gols/assistências, e fase máxima do time.
+   ============================================================ */
+export function computePowerRankingPlayers(state) {
+  const playerStats = computePlayerStats(state);
+  /* Fase máxima do time */
+  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const champ = getChampion(state);
+  return playerStats
+    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0)
+    .map((s) => {
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const stageBonus = (maxStageByTeam[s.teamId] ?? 0) * 3;
+      const isChampionTeam = champ?.id === s.teamId;
+      const cardPenalty = (s.yellows * 1) + (s.reds * 4);
+      const score =
+        (avg * 6) +
+        (s.goals * 4) +
+        (s.assists * 2) +
+        stageBonus +
+        (isChampionTeam ? 6 : 0) +
+        Math.log2(s.ratingCount + 1) * 2 -
+        cardPenalty;
+      return { ...s, avg, stageReached: maxStageByTeam[s.teamId] ?? 0, isChampionTeam, powerScore: score };
+    })
+    .sort((a, b) => b.powerScore - a.powerScore);
+}
+
+/* ============================================================
+   TIMELINE — eventos importantes em ordem cronológica reversa
+   ============================================================ */
+export function computeTimelineEvents(state) {
+  const events = [];
+  /* Helper pra "tempo" cronológico de um jogo */
+  const tOf = (m) => STAGE_ORDER_INDEX[matchStageKey(m)] ?? 0;
+
+  /* 1. Cada jogo jogado vira um evento "match-result" */
+  for (const m of state.matches) {
+    if (!m.played || m.autoPlayed) continue;
+    if (!m.homeTeamId || !m.awayTeamId) continue;
+    events.push({
+      kind: 'match-result',
+      t: tOf(m),
+      match: m,
+    });
+  }
+  /* 2. Hat-tricks (3+ gols num jogo) */
+  for (const m of state.matches) {
+    if (!m.played || m.autoPlayed) continue;
+    const goalsByPlayer = {};
+    for (const ev of (m.events || [])) {
+      if (ev.type !== 'goal' || !ev.playerName) continue;
+      const k = `${ev.teamId}|${ev.playerName}`;
+      goalsByPlayer[k] = (goalsByPlayer[k] || 0) + 1;
+    }
+    for (const [k, n] of Object.entries(goalsByPlayer)) {
+      if (n >= 3) {
+        const [teamId, playerName] = k.split('|');
+        events.push({ kind: 'hattrick', t: tOf(m) + 0.1, match: m, teamId, playerName, goals: n });
+      }
+    }
+  }
+  /* 3. Eliminação por pênaltis */
+  for (const m of state.matches) {
+    if (m.stage === 'group') continue;
+    if (m.isExtra && m.penaltyWinner) {
+      events.push({ kind: 'penalties', t: tOf(m) + 0.2, match: m });
+    }
+  }
+  /* 4. Campeão */
+  const champ = getChampion(state);
+  if (champ) {
+    const finalMatch = state.matches.find((m) => m.stage === 'final' && m.played);
+    events.push({ kind: 'champion', t: 10, champion: champ, match: finalMatch });
+  }
+
+  events.sort((a, b) => b.t - a.t);
+  return events;
 }
 
 /* ============================================================
