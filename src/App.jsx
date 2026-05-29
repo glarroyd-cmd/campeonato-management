@@ -18,6 +18,10 @@ import {
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
   autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
   getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
+  computeBestThirds,
+  computeHeadToHead, getUpcomingMatches, getNotablePlayersForTeam,
+  computeTournamentRecords, getChampionPath,
+  computePowerRankingTeams, computePowerRankingPlayers, computeTimelineEvents,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -276,7 +280,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <Header state={state} view={safeView} setView={setView} code={code} onLeave={leave} />
       <main className="max-w-7xl mx-auto px-4 py-6 pb-24">
-        {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} />}
+        {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
         {safeView === 'matches'  && <MatchesView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
         {safeView === 'match' && activeMatchId && (
           <MatchDetailView state={state} matchId={activeMatchId} updateMatches={updateMatches} update={update} allTeams={allTeams} onBack={() => setView('matches')} openMatch={(id) => setActiveMatchId(id)} />
@@ -1139,30 +1143,251 @@ function TeamsKoSetup({ state, update, format, code, onLeave, onFinish }) {
 /* ============================================================
    GROUPS VIEW — visualização da fase de grupos
    ============================================================ */
-function GroupsView({ state, update, updateMatches, allTeams }) {
+function GroupsView({ state, update, updateMatches, allTeams, openMatch }) {
   const format = getFormat(state.formatId);
+
+  const h2h = useMemo(() => computeHeadToHead(state), [state.matches]);
+  const upcoming = useMemo(() => getUpcomingMatches(state, 5), [state.matches]);
+
   if (!format.hasGroups) {
-    return <div className="text-center text-slate-500 py-12">Este torneio é mata-mata direto. Use a aba "Mata-Mata".</div>;
+    return (
+      <div className="space-y-4">
+        <HeadToHeadCard state={state} h2h={h2h} />
+        <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} />
+        <div className="text-center text-slate-500 py-12">Este torneio é mata-mata direto. Use a aba "Mata-Mata".</div>
+      </div>
+    );
   }
 
+  const bestThirds = useMemo(() => computeBestThirds(state), [state.matches]);
+  const thirdsByTeamId = useMemo(() => {
+    const map = {};
+    for (const t of bestThirds) map[t.id] = t;
+    return map;
+  }, [bestThirds]);
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      {state.groups.map((g) => (
-        <Card key={g.letter} className="p-4">
-          <h3 className="font-black text-xl mb-3">Grupo {g.letter}</h3>
-          <StandingTable rows={computeGroupStanding(state, g.letter)} state={state} />
+    <div className="space-y-4">
+      <HeadToHeadCard state={state} h2h={h2h} />
+      <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {state.groups.map((g) => (
+          <Card key={g.letter} className="p-4">
+            <h3 className="font-black text-xl mb-3">Grupo {g.letter}</h3>
+            <StandingTable
+              rows={computeGroupStanding(state, g.letter)}
+              state={state}
+              thirdsByTeamId={thirdsByTeamId}
+              bestThirdsCount={format.bestThirds}
+            />
+          </Card>
+        ))}
+      </div>
+
+      {format.bestThirds > 0 && bestThirds.length > 0 && (
+        <Card className="p-4">
+          <h3 className="font-black text-lg mb-1 flex items-center gap-2">
+            <Award className="w-5 h-5 text-emerald-400" />
+            Melhores 3ºs lugares
+            <span className="text-xs font-normal text-slate-500">— {format.bestThirds} se classificam pro mata-mata</span>
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-slate-500">
+                <tr>
+                  <th className="text-left font-medium pb-1 pr-2">#</th>
+                  <th className="text-left font-medium pb-1 pr-2">Time</th>
+                  <th className="text-left font-medium pb-1 pr-2">Grupo</th>
+                  <th className="text-left font-medium pb-1 pr-2">Dono</th>
+                  <th className="font-medium pb-1 px-1">Pts</th>
+                  <th className="font-medium pb-1 px-1">SG</th>
+                  <th className="font-medium pb-1 px-1">GP</th>
+                  <th className="font-medium pb-1 pl-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bestThirds.map((t, i) => (
+                  <tr key={t.id} className={cls(
+                    'border-t border-slate-800',
+                    t.qualified ? 'bg-emerald-950/40 text-emerald-100' : 'text-slate-500'
+                  )}>
+                    <td className="py-1.5 pr-2 font-bold tabular-nums">{i + 1}</td>
+                    <td className="py-1.5 pr-2"><span className="mr-1">{t.flag}</span>{t.name}</td>
+                    <td className="py-1.5 pr-2">{t.group}</td>
+                    <td className="py-1.5 pr-2"><OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" /></td>
+                    <td className="text-center py-1.5 px-1 tabular-nums font-bold">{t.Pts}</td>
+                    <td className="text-center py-1.5 px-1 tabular-nums">{t.SG > 0 ? '+' : ''}{t.SG}</td>
+                    <td className="text-center py-1.5 px-1 tabular-nums">{t.GP}</td>
+                    <td className="py-1.5 pl-2">
+                      {t.qualified ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-emerald-300">
+                          <Check className="w-3 h-3" /> Classificado
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-slate-600">
+                          <X className="w-3 h-3" /> Eliminado
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Card>
-      ))}
+      )}
     </div>
   );
 }
 
-function StandingTable({ rows, state }) {
+/* === Card de head-to-head dos jogadores === */
+function HeadToHeadCard({ state, h2h }) {
+  if (h2h.totalMatches === 0) {
+    return (
+      <Card className="p-4 text-center text-slate-500 text-sm italic">
+        Nenhum confronto direto entre {state.player1Name} e {state.player2Name} ainda.
+      </Card>
+    );
+  }
+  const p1Color = state.player1Color || '#06b6d4';
+  const p2Color = state.player2Color || '#f59e0b';
+  const totalGoals = h2h.p1Goals + h2h.p2Goals;
+  const p1Pct = totalGoals > 0 ? (h2h.p1Goals / totalGoals) * 100 : 50;
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between text-xs text-slate-400 mb-2 uppercase tracking-wider font-bold">
+        <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Confronto direto</span>
+        <span className="text-slate-500 normal-case tracking-normal font-normal">{h2h.totalMatches} jogos no torneio</span>
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        {/* P1 lado esquerdo */}
+        <div className="text-right">
+          <div className="font-black text-base truncate" style={{ color: p1Color }}>{state.player1Name}</div>
+          <div className="text-3xl font-black tabular-nums leading-none mt-1">{h2h.p1Wins}</div>
+          <div className="text-[10px] uppercase text-slate-500 mt-0.5">vitórias</div>
+        </div>
+        {/* Centro */}
+        <div className="text-center">
+          <div className="text-xl font-black text-slate-400 tabular-nums leading-none mb-1">{h2h.draws}</div>
+          <div className="text-[10px] uppercase text-slate-500">empates</div>
+        </div>
+        {/* P2 lado direito */}
+        <div className="text-left">
+          <div className="font-black text-base truncate" style={{ color: p2Color }}>{state.player2Name}</div>
+          <div className="text-3xl font-black tabular-nums leading-none mt-1">{h2h.p2Wins}</div>
+          <div className="text-[10px] uppercase text-slate-500 mt-0.5">vitórias</div>
+        </div>
+      </div>
+      {/* Barra de gols */}
+      <div className="mt-3">
+        <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+          <span style={{ color: p1Color }} className="font-bold">{h2h.p1Goals} gols</span>
+          <span>Gols</span>
+          <span style={{ color: p2Color }} className="font-bold">{h2h.p2Goals} gols</span>
+        </div>
+        <div className="h-2 rounded-full overflow-hidden flex bg-slate-800">
+          <div style={{ width: `${p1Pct}%`, backgroundColor: p1Color }} />
+          <div style={{ width: `${100 - p1Pct}%`, backgroundColor: p2Color }} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* === Card de próximos jogos com "ficar de olho" === */
+function UpcomingMatchesCard({ state, upcoming, openMatch }) {
+  if (upcoming.length === 0) return null;
+  return (
+    <Card className="p-4">
+      <h3 className="text-xs uppercase tracking-wider font-bold text-slate-400 mb-3 flex items-center gap-1.5">
+        <Calendar className="w-3.5 h-3.5" /> Próximos jogos
+        <span className="text-slate-500 normal-case tracking-normal font-normal">— {upcoming.length} pendentes</span>
+      </h3>
+      <div className="space-y-3">
+        {upcoming.map((m) => (
+          <UpcomingMatchRow key={m.id} state={state} match={m} openMatch={openMatch} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function UpcomingMatchRow({ state, match, openMatch }) {
+  const home = getTeamById(state, match.homeTeamId);
+  const away = getTeamById(state, match.awayTeamId);
+  const homeColor = getOwnerColor(state, home?.owner);
+  const awayColor = getOwnerColor(state, away?.owner);
+  const homeNotables = useMemo(() => getNotablePlayersForTeam(state, match.homeTeamId, 2), [state.matches, match.homeTeamId]);
+  const awayNotables = useMemo(() => getNotablePlayersForTeam(state, match.awayTeamId, 2), [state.matches, match.awayTeamId]);
+  const stageLbl = match.stage === 'group' ? `Grupo ${match.group} · R${match.round}` : (STAGE_LABELS[match.stage] || match.stage);
+
+  return (
+    <button
+      onClick={() => openMatch(match.id)}
+      className="w-full text-left p-2.5 rounded-lg border-2 border-dashed border-slate-700 hover:border-lime-400 transition block"
+      style={{ background: `linear-gradient(90deg, ${homeColor}1F 0%, transparent 50%, ${awayColor}1F 100%)` }}
+    >
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">{stageLbl}</div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <div className="flex items-center gap-1.5 justify-end text-right truncate min-w-0">
+          <div className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
+            <span className="truncate font-bold">{home?.flag} {home?.name}</span>
+            <OwnerTag owner={home?.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+          </div>
+        </div>
+        <div className="text-slate-600 font-mono font-black">×</div>
+        <div className="flex items-center gap-1.5 truncate min-w-0">
+          <div className="flex flex-col items-start gap-0.5 min-w-0 max-w-full">
+            <span className="truncate font-bold">{away?.flag} {away?.name}</span>
+            <OwnerTag owner={away?.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+          </div>
+        </div>
+      </div>
+      {(homeNotables.length > 0 || awayNotables.length > 0) && (
+        <div className="mt-2 pt-2 border-t border-slate-800/60 grid grid-cols-2 gap-2">
+          <NotablePlayers players={homeNotables} side="left" />
+          <NotablePlayers players={awayNotables} side="right" />
+        </div>
+      )}
+    </button>
+  );
+}
+
+function NotablePlayers({ players, side }) {
+  if (players.length === 0) {
+    return <div className="text-[10px] italic text-slate-600 px-1">Sem histórico ainda</div>;
+  }
+  return (
+    <div className={cls('text-[10px]', side === 'right' && 'text-right')}>
+      <div className="uppercase tracking-wider text-slate-500 font-bold mb-0.5 flex items-center gap-1" style={{ justifyContent: side === 'right' ? 'flex-end' : 'flex-start' }}>
+        <Star className="w-2.5 h-2.5 text-amber-400" /> Ficar de olho
+      </div>
+      <div className="space-y-0.5">
+        {players.map((p) => (
+          <div key={p.playerName} className="text-slate-300 truncate">
+            <span className="font-bold">{p.playerName}</span>
+            <span className="text-slate-500 ml-1">
+              {p.goals > 0 && `⚽${p.goals} `}
+              {p.assists > 0 && `🤝${p.assists} `}
+              {p.avg > 0 && `⭐${p.avg.toFixed(1)}`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0 }) {
   return (
     <table className="w-full text-xs">
       <thead className="text-slate-500">
         <tr>
-          <th className="text-left font-medium pb-1">#</th>
+          <th className="text-left font-medium pb-1 w-6">#</th>
           <th className="text-left font-medium pb-1">Time</th>
           <th className="text-left font-medium pb-1 px-1">Dono</th>
           <th className="font-medium pb-1 px-1">P</th>
@@ -1174,19 +1399,49 @@ function StandingTable({ rows, state }) {
         </tr>
       </thead>
       <tbody>
-        {rows.map((r, i) => (
-          <tr key={r.id} className={cls('border-t border-slate-800', i < 2 && 'text-lime-300', i === 2 && 'text-yellow-300')}>
-            <td className="py-1">{i + 1}</td>
-            <td className="py-1"><span className="mr-1">{r.flag}</span>{r.name}</td>
-            <td className="py-1 px-1"><OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" /></td>
-            <td className="text-center py-1 tabular-nums">{r.P}</td>
-            <td className="text-center py-1 tabular-nums">{r.V}</td>
-            <td className="text-center py-1 tabular-nums">{r.E}</td>
-            <td className="text-center py-1 tabular-nums">{r.D}</td>
-            <td className="text-center py-1 tabular-nums">{r.SG > 0 ? '+' : ''}{r.SG}</td>
-            <td className="text-center py-1 tabular-nums font-bold">{r.Pts}</td>
-          </tr>
-        ))}
+        {rows.map((r, i) => {
+          /* Status:
+             - i < 2 → classificado direto (verde forte)
+             - i === 2 e qualified entre os melhores 3ºs → classificado (verde médio)
+             - i === 2 e não qualified → ainda em disputa (amarelo)
+             - i === 3 → eliminado */
+          let rowCls = '';
+          let indicator = null;
+          if (i < 2) {
+            rowCls = 'bg-emerald-950/50 text-emerald-100 font-medium';
+            indicator = <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 ml-0.5" title="Classificado" />;
+          } else if (i === 2 && bestThirdsCount > 0) {
+            const t = thirdsByTeamId[r.id];
+            if (t?.qualified) {
+              rowCls = 'bg-emerald-950/30 text-emerald-100/90';
+              indicator = <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 ml-0.5" title="Melhor 3º classificado" />;
+            } else {
+              rowCls = 'text-amber-300';
+              indicator = <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5" title="3º em disputa" />;
+            }
+          } else if (i === 2) {
+            rowCls = 'text-amber-300';
+            indicator = null;
+          }
+          return (
+            <tr key={r.id} className={cls('border-t border-slate-800', rowCls)}>
+              <td className="py-1.5 tabular-nums">
+                <span className="inline-flex items-center">{i + 1}{indicator}</span>
+              </td>
+              <td className="py-1.5"><span className="mr-1">{r.flag}</span>{r.name}</td>
+              <td className="py-1.5 px-1">
+                <OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                  p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+              </td>
+              <td className="text-center py-1.5 tabular-nums">{r.P}</td>
+              <td className="text-center py-1.5 tabular-nums">{r.V}</td>
+              <td className="text-center py-1.5 tabular-nums">{r.E}</td>
+              <td className="text-center py-1.5 tabular-nums">{r.D}</td>
+              <td className="text-center py-1.5 tabular-nums">{r.SG > 0 ? '+' : ''}{r.SG}</td>
+              <td className="text-center py-1.5 tabular-nums font-bold">{r.Pts}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -1317,38 +1572,48 @@ function MatchRow({ match, state, onClick }) {
   if (!home || !away) return null;
   const isAuto = match.autoPlayed;
 
+  const homeColor = getOwnerColor(state, home.owner);
+  const awayColor = getOwnerColor(state, away.owner);
+
   /* Três estados visuais bem distintos */
-  let containerCls;
+  let outerCls;
   if (isAuto) {
-    containerCls = 'bg-slate-900/30 border-slate-800/60 opacity-60';
+    outerCls = 'opacity-50 border border-slate-800';
   } else if (match.played) {
-    containerCls = 'bg-emerald-950/40 border-emerald-700/50 hover:border-emerald-500';
+    outerCls = 'border-2 border-emerald-700/60 shadow-sm shadow-emerald-900/40 hover:border-emerald-500';
   } else {
-    containerCls = 'bg-slate-900/80 border-2 border-dashed border-lime-500/40 hover:border-lime-400 hover:bg-slate-900';
+    outerCls = 'border-2 border-dashed border-slate-700 hover:border-lime-400';
   }
 
+  /* Faixa de cor sutil em cada lado da linha */
+  const bgStyle = isAuto
+    ? { background: 'rgb(15 23 42 / 0.5)' }
+    : { background: `linear-gradient(90deg, ${homeColor}22 0%, ${homeColor}10 35%, transparent 50%, ${awayColor}10 65%, ${awayColor}22 100%)` };
+
   return (
-    <button onClick={onClick} className={cls('w-full p-2 rounded-lg border transition text-sm block', containerCls)}>
+    <button onClick={onClick} className={cls('w-full p-2 rounded-lg transition text-sm block', outerCls)} style={bgStyle}>
       {isAuto && (
         <div className="text-[9px] uppercase tracking-wider text-slate-500 mb-1 text-center font-bold">Auto-empate (mesmo dono)</div>
       )}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
         <div className="flex items-center gap-1.5 justify-end text-right truncate min-w-0">
-          <div className="flex flex-col items-end gap-0.5 min-w-0">
+          <div className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
             <span className="truncate font-medium">{home.flag} {home.name}</span>
-            <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+            <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
         </div>
         <div className={cls('font-mono font-black tabular-nums px-3 py-1 rounded',
-          match.played && !isAuto ? 'bg-slate-950 text-lime-300 text-base' :
+          match.played && !isAuto ? 'bg-slate-950 text-emerald-300 text-base border border-emerald-700/40' :
           isAuto ? 'text-slate-600 text-sm' :
-          'text-slate-600 text-base')}>
+          'text-slate-500 text-base')}>
           {match.played ? `${match.homeScore}–${match.awayScore}` : '—'}
         </div>
         <div className="flex items-center gap-1.5 truncate min-w-0">
-          <div className="flex flex-col items-start gap-0.5 min-w-0">
+          <div className="flex flex-col items-start gap-0.5 min-w-0 max-w-full">
             <span className="truncate font-medium">{away.flag} {away.name}</span>
-            <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+            <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
         </div>
       </div>
@@ -2001,6 +2266,45 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
 }
 
 function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
+  const [swapTeam, setSwapTeam] = useState(null);
+  // swapTeam: { teamId, stage, koIndex } | null
+
+  /* Lida com clique num time: seleciona ou executa o swap */
+  const handleTeamClick = useCallback((teamId, stage, koIndex) => {
+    if (!teamId) return;
+    if (!swapTeam) {
+      setSwapTeam({ teamId, stage, koIndex });
+      return;
+    }
+    if (swapTeam.teamId === teamId) {
+      setSwapTeam(null); // clicou no mesmo → cancela
+      return;
+    }
+    /* Executa o swap entre os dois times */
+    const A = swapTeam;
+    const B = { teamId, stage, koIndex };
+    const newMatches = koMatches.map((m) => {
+      if (m.played) return m; // nunca mexe em jogos já jogados
+      const inA = m.stage === A.stage && m.koIndex === A.koIndex;
+      const inB = m.stage === B.stage && m.koIndex === B.koIndex;
+      if (!inA && !inB) return m;
+      const swap = (id) => id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id;
+      return { ...m, homeTeamId: swap(m.homeTeamId), awayTeamId: swap(m.awayTeamId) };
+    });
+    /* Junta com matches de outros stages que não foram tocados */
+    const groupMatches = state.matches.filter((m) => m.stage === 'group');
+    updateMatches([...groupMatches, ...newMatches]);
+    setSwapTeam(null);
+  }, [swapTeam, koMatches, state.matches, updateMatches]);
+
+  /* Cancela swap com ESC */
+  useEffect(() => {
+    if (!swapTeam) return;
+    const handler = (e) => { if (e.key === 'Escape') setSwapTeam(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [swapTeam]);
+
   /* Stages do bracket principal (exclui third lugar, mostra separado) */
   const allStages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
   const stageOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
@@ -2018,13 +2322,32 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     return Object.entries(grouped).sort(([a], [b]) => Number(a) - Number(b)).map(([, legs]) => legs);
   };
 
-  /* Altura mínima dinâmica baseada no maior stage (cada confronto ~ 90px) */
   const firstStageCount = groupByConfront(mainStages[0])?.length || 0;
   const minHeight = Math.max(420, firstStageCount * 86);
 
   return (
-    <div className="space-y-6">
-      {/* Header com nomes das fases (sticky no topo do scroll) */}
+    <div className="space-y-4">
+      {/* Banner modo swap */}
+      {swapTeam ? (
+        <div className="flex items-center justify-between gap-3 p-3 bg-blue-900/30 border border-blue-700/60 rounded-lg text-sm">
+          <div className="flex items-center gap-2">
+            <ArrowLeftRight className="w-4 h-4 text-blue-300" />
+            <span className="text-blue-200">
+              <strong>{getTeamById(state, swapTeam.teamId)?.name}</strong> selecionado. Clique em outro time para trocar.
+            </span>
+          </div>
+          <button onClick={() => setSwapTeam(null)} className="text-blue-400 hover:text-blue-200 text-xs flex items-center gap-1">
+            <X className="w-3.5 h-3.5" /> Cancelar (ESC)
+          </button>
+        </div>
+      ) : (
+        <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+          <ArrowLeftRight className="w-3.5 h-3.5" />
+          Clique no ícone <ArrowLeftRight className="w-3 h-3 inline" /> ao lado de um time para trocar de posição (só funciona em jogos sem resultado).
+        </div>
+      )}
+
+      {/* Header com nomes das fases */}
       <div className="overflow-x-auto pb-2">
         <div className="inline-flex gap-3 min-w-full">
           {mainStages.map((stage) => (
@@ -2041,7 +2364,14 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
             return (
               <div key={stage} className="flex-shrink-0 w-[210px] flex flex-col justify-around gap-2">
                 {confronts.map((legs, cIdx) => (
-                  <KnockoutConfrontCard key={`${stage}-${cIdx}`} state={state} legs={legs} openMatch={openMatch} />
+                  <KnockoutConfrontCard
+                    key={`${stage}-${cIdx}`}
+                    state={state}
+                    legs={legs}
+                    openMatch={openMatch}
+                    swapTeam={swapTeam}
+                    onTeamClick={handleTeamClick}
+                  />
                 ))}
               </div>
             );
@@ -2057,7 +2387,14 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
           </h3>
           <div className="max-w-xs">
             {groupByConfront('third').map((legs, cIdx) => (
-              <KnockoutConfrontCard key={`third-${cIdx}`} state={state} legs={legs} openMatch={openMatch} />
+              <KnockoutConfrontCard
+                key={`third-${cIdx}`}
+                state={state}
+                legs={legs}
+                openMatch={openMatch}
+                swapTeam={swapTeam}
+                onTeamClick={handleTeamClick}
+              />
             ))}
           </div>
         </div>
@@ -2066,7 +2403,7 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
   );
 }
 
-function KnockoutConfrontCard({ state, legs, openMatch }) {
+function KnockoutConfrontCard({ state, legs, openMatch, swapTeam, onTeamClick }) {
   legs = [...legs].sort((a, b) => a.leg - b.leg);
   const sample = legs[0];
   const home = getTeamById(state, sample.homeTeamId);
@@ -2076,7 +2413,7 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
   const isMultiLeg = sample.totalLegs > 1;
   const etMatch = state.matches.find((m) => m.stage === sample.stage && m.koIndex === sample.koIndex && m.isExtra);
 
-  /* Determina placar exibido por time (agregado ou simples) */
+  /* Placar exibido (agregado ou simples) */
   let homeDisplay = '—';
   let awayDisplay = '—';
   if (legs.every((m) => m.played)) {
@@ -2091,68 +2428,106 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
 
   const homeWon = outcome.decided && outcome.winner === sample.homeTeamId;
   const awayWon = outcome.decided && outcome.winner === sample.awayTeamId;
-  const undefined1 = !home;
-  const undefined2 = !away;
+
+  /* Um confronto pode ser trocado enquanto nenhum leg foi jogado */
+  const confrontPlayed = legs.some((m) => m.played);
+
+  const TeamRow = ({ team, teamId, score, won, isSecond }) => {
+    const isSelected = swapTeam?.teamId === teamId;
+    const isSwapTarget = swapTeam && !isSelected && !confrontPlayed && teamId;
+    const ownerColor = getOwnerColor(state, team?.owner);
+    const decidedAndLost = outcome.decided && !won && team;
+
+    /* Estilo de fundo da linha:
+       - Selecionado para swap → azul forte
+       - Vencedor → fundo emerald saturado
+       - Perdedor (decidido) → opaco
+       - Padrão com time definido → tinta sutil da cor do dono */
+    let bgStyle = {};
+    if (isSelected) {
+      bgStyle = { background: 'rgb(30 58 138 / 0.5)' };
+    } else if (won) {
+      bgStyle = { background: `linear-gradient(90deg, rgb(6 78 59 / 0.6) 0%, ${ownerColor}33 100%)` };
+    } else if (decidedAndLost) {
+      bgStyle = { background: 'rgb(15 23 42 / 0.6)', opacity: 0.5 };
+    } else if (team && team.owner) {
+      bgStyle = { background: `linear-gradient(90deg, ${ownerColor}28 0%, ${ownerColor}10 100%)` };
+    }
+
+    return (
+      <div
+        className={cls(
+          'flex items-center gap-1 transition',
+          isSecond && 'border-t border-slate-800',
+          isSwapTarget && 'ring-1 ring-blue-500/40',
+        )}
+        style={bgStyle}
+      >
+        {/* Botão de swap — só aparece quando jogo não jogado */}
+        {!confrontPlayed && teamId ? (
+          <button
+            onClick={() => onTeamClick(teamId, sample.stage, sample.koIndex)}
+            className={cls(
+              'flex-shrink-0 px-1.5 py-2 transition',
+              isSelected ? 'text-blue-300' : isSwapTarget ? 'text-blue-400 hover:text-blue-200' : 'text-slate-600 hover:text-blue-400',
+            )}
+            title={isSelected ? 'Selecionado — clique em outro time para trocar' : 'Clique para trocar este time de posição'}
+          >
+            <ArrowLeftRight className="w-3 h-3" />
+          </button>
+        ) : (
+          <div className="w-6 flex-shrink-0" />
+        )}
+
+        {/* Conteúdo clicável que abre o jogo */}
+        <button
+          onClick={() => openMatch(legs[isMultiLeg && isSecond ? 1 : 0].id)}
+          className={cls(
+            'flex-1 grid grid-cols-[1fr_auto] items-center gap-1 pr-2 py-1.5 hover:bg-slate-800/40 transition min-w-0',
+          )}
+        >
+          <div className="flex items-center gap-1.5 truncate min-w-0">
+            <span>{team?.flag || '?'}</span>
+            <span className={cls(
+              'truncate text-xs',
+              won && 'font-bold text-emerald-100',
+              decidedAndLost && 'line-through text-slate-500',
+              !team && 'italic text-slate-600',
+            )}>
+              {team?.name || 'A definir'}
+            </span>
+            {team?.owner && (
+              <OwnerTag owner={team.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+            )}
+          </div>
+          <span className={cls(
+            'font-mono font-bold tabular-nums text-xs',
+            won ? 'text-emerald-200 text-sm' : decidedAndLost ? 'text-slate-600' : 'text-slate-300',
+          )}>
+            {score}
+          </span>
+        </button>
+      </div>
+    );
+  };
 
   return (
-    <Card className={cls(
-      'overflow-hidden text-xs',
-      sameOwner && 'border-amber-700/60'
-    )}>
+    <Card className={cls('overflow-hidden', sameOwner && 'border-amber-700/60')}>
       {sameOwner && (
         <div className="px-2 py-0.5 bg-amber-900/30 text-[9px] text-amber-300 font-bold flex items-center gap-1">
           <AlertTriangle className="w-2.5 h-2.5" />Mesmo dono
         </div>
       )}
-      {/* Linha do time da casa */}
-      <button
-        onClick={() => openMatch(legs[0].id)}
-        className={cls(
-          'w-full grid grid-cols-[1fr_auto] items-center gap-1 px-2 py-1.5 hover:bg-slate-800/60 transition',
-          homeWon && 'bg-emerald-950/40',
-          !legs[0].played && 'opacity-90'
-        )}
-      >
-        <div className="flex items-center gap-1.5 truncate min-w-0">
-          <span>{home?.flag || '?'}</span>
-          <span className={cls('truncate', homeWon && 'font-bold text-emerald-200', undefined1 && 'italic text-slate-600')}>
-            {home?.name || 'A definir'}
-          </span>
-          {home?.owner && <OwnerTag owner={home.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />}
-        </div>
-        <span className={cls('font-mono font-bold tabular-nums', homeWon ? 'text-emerald-300' : 'text-slate-300')}>
-          {homeDisplay}
-        </span>
-      </button>
 
-      {/* Linha do visitante */}
-      <button
-        onClick={() => openMatch(legs[isMultiLeg ? 1 : 0].id)}
-        className={cls(
-          'w-full grid grid-cols-[1fr_auto] items-center gap-1 px-2 py-1.5 hover:bg-slate-800/60 transition border-t border-slate-800',
-          awayWon && 'bg-emerald-950/40',
-          !legs[0].played && 'opacity-90'
-        )}
-      >
-        <div className="flex items-center gap-1.5 truncate min-w-0">
-          <span>{away?.flag || '?'}</span>
-          <span className={cls('truncate', awayWon && 'font-bold text-emerald-200', undefined2 && 'italic text-slate-600')}>
-            {away?.name || 'A definir'}
-          </span>
-          {away?.owner && <OwnerTag owner={away.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />}
-        </div>
-        <span className={cls('font-mono font-bold tabular-nums', awayWon ? 'text-emerald-300' : 'text-slate-300')}>
-          {awayDisplay}
-        </span>
-      </button>
+      <TeamRow team={home} teamId={sample.homeTeamId} score={homeDisplay} won={homeWon} isSecond={false} />
+      <TeamRow team={away} teamId={sample.awayTeamId} score={awayDisplay} won={awayWon} isSecond={true} />
 
-      {/* Linha de meta-info: prorrogação, ida/volta detalhada, pênaltis */}
+      {/* Meta-info: prorrogação, ida/volta, pênaltis */}
       {(isMultiLeg || etMatch || outcome.viaPenalties) && (
         <div className="px-2 py-1 bg-slate-950/60 border-t border-slate-800 text-[10px] text-slate-500 text-center space-y-0.5">
           {isMultiLeg && legs.every((m) => m.played) && (
-            <div>
-              Ida: {legs[0].homeScore}-{legs[0].awayScore} · Volta: {legs[1].homeScore}-{legs[1].awayScore}
-            </div>
+            <div>Ida: {legs[0].homeScore}-{legs[0].awayScore} · Volta: {legs[1].homeScore}-{legs[1].awayScore}</div>
           )}
           {etMatch && (
             <button onClick={() => openMatch(etMatch.id)} className="text-amber-400 hover:text-amber-300 flex items-center gap-1 justify-center w-full">
@@ -2171,25 +2546,26 @@ function KnockoutConfrontCard({ state, legs, openMatch }) {
    STATS VIEW
    ============================================================ */
 function StatsView({ state, allTeams }) {
-  const playerStats = useMemo(() => computePlayerStats(state), [state.matches]);
-  const teamStats   = useMemo(() => computeTeamStats(state),   [state.matches]);
-  const ownerStats  = useMemo(() => computeOwnerStats(state),  [state.matches]);
+  const playerStats   = useMemo(() => computePlayerStats(state), [state.matches]);
+  const teamStats     = useMemo(() => computeTeamStats(state),   [state.matches]);
+  const ownerStats    = useMemo(() => computeOwnerStats(state),  [state.matches]);
+  const powerTeams    = useMemo(() => computePowerRankingTeams(state),   [state.matches]);
+  const powerPlayers  = useMemo(() => computePowerRankingPlayers(state), [state.matches]);
+  const records       = useMemo(() => computeTournamentRecords(state),   [state.matches]);
+  const championPath  = useMemo(() => getChampionPath(state),            [state.matches]);
+  const timeline      = useMemo(() => computeTimelineEvents(state),      [state.matches]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
   const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg).slice(0, 10);
   const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows)).slice(0, 10);
 
-  /* Times ordenados */
-  const teamsByGoals    = [...teamStats].filter((t) => t.P > 0).sort((a, b) => b.GP - a.GP).slice(0, 10);
-  const teamsByDefense  = [...teamStats].filter((t) => t.P > 0).sort((a, b) => a.GC - b.GC || b.P - a.P).slice(0, 10);
-  const teamsByWinPct   = [...teamStats].filter((t) => t.P >= 2).sort((a, b) => b.winPct - a.winPct || b.Pts - a.Pts).slice(0, 10);
-
   const champion = getChampion(state);
   const noStatsYet = teamStats.every((t) => t.P === 0);
 
   return (
     <div className="space-y-6">
+      {/* Banner do campeão */}
       {champion && (
         <Card className="p-5 border-amber-700/60 bg-gradient-to-br from-amber-900/30 to-yellow-900/10">
           <div className="flex items-center gap-3">
@@ -2205,74 +2581,367 @@ function StatsView({ state, allTeams }) {
         </Card>
       )}
 
-      {/* Comparação entre jogadores */}
+      {/* Trajetória do campeão */}
+      {championPath && championPath.matches.length > 0 && <ChampionPathCard state={state} championPath={championPath} />}
+
+      {/* Comparação entre jogadores (donos) */}
       <section>
         <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-          <Users className="w-4 h-4" /> Jogadores
+          <Users className="w-4 h-4" /> Comparação dos jogadores
         </h2>
         <Card className="p-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {ownerStats.map((o) => (
-              <div key={o.id} className={cls('p-3 rounded-lg border',
-                o.id === 'p1' ? 'bg-cyan-950/30 border-cyan-800/50' : 'bg-amber-950/30 border-amber-800/50'
-              )}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="font-black text-lg">{o.name}</div>
-                  <span className="text-xs text-slate-400">{o.teams} times</span>
-                </div>
-                {o.P === 0 ? (
-                  <div className="text-xs text-slate-500 italic">Sem jogos ainda.</div>
-                ) : (
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <KpiCell label="Jogos" value={o.P} />
-                    <KpiCell label="Pontos" value={o.Pts} />
-                    <KpiCell label="% Apr." value={`${o.winPct}%`} highlight={o.winPct >= 50} />
-                    <KpiCell label="V-E-D" value={`${o.V}-${o.E}-${o.D}`} />
-                    <KpiCell label="Gols pró" value={o.GP} />
-                    <KpiCell label="Saldo" value={(o.SG > 0 ? '+' : '') + o.SG} highlight={o.SG > 0} />
+            {ownerStats.map((o) => {
+              const c = o.id === 'p1' ? (state.player1Color || '#06b6d4') : (state.player2Color || '#f59e0b');
+              return (
+                <div key={o.id} className="p-3 rounded-lg border" style={{ backgroundColor: `${c}15`, borderColor: `${c}55` }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="font-black text-lg" style={{ color: c }}>{o.name}</div>
+                    <span className="text-xs text-slate-400">{o.teams} times</span>
                   </div>
-                )}
-              </div>
-            ))}
+                  {o.P === 0 ? (
+                    <div className="text-xs text-slate-500 italic">Sem jogos ainda.</div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <KpiCell label="Jogos" value={o.P} />
+                      <KpiCell label="Pontos" value={o.Pts} />
+                      <KpiCell label="% Apr." value={`${o.winPct}%`} highlight={o.winPct >= 50} />
+                      <KpiCell label="V-E-D" value={`${o.V}-${o.E}-${o.D}`} />
+                      <KpiCell label="Gols pró" value={o.GP} />
+                      <KpiCell label="Saldo" value={(o.SG > 0 ? '+' : '') + o.SG} highlight={o.SG > 0} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </Card>
       </section>
 
-      {/* Stats por time */}
-      <section>
-        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-          <Trophy className="w-4 h-4" /> Times
-        </h2>
-        {noStatsYet ? (
-          <Card className="p-4 text-xs text-slate-500 italic">Sem jogos contabilizados ainda.</Card>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <TeamStatsList title="Mais marcaram (gols pró)" list={teamsByGoals} state={state}
-              render={(t) => <span className="font-bold tabular-nums">{t.GP}<span className="text-slate-500 text-xs font-normal"> ({t.P}j)</span></span>} />
-            <TeamStatsList title="Melhor defesa (menos gols sofridos)" list={teamsByDefense} state={state}
-              render={(t) => <span className="font-bold tabular-nums">{t.GC}<span className="text-slate-500 text-xs font-normal"> ({t.P}j)</span></span>} />
-            <TeamStatsList title="Melhor aproveitamento" list={teamsByWinPct} state={state}
-              render={(t) => <span className="font-bold tabular-nums">{t.winPct}%<span className="text-slate-500 text-xs font-normal"> ({t.Pts}pts)</span></span>} />
-            <TeamStatsList title="Tabela completa" list={[...teamStats].filter((t) => t.P > 0).sort((a, b) => b.Pts - a.Pts || b.SG - a.SG).slice(0, 10)} state={state}
-              render={(t) => <span className="text-xs tabular-nums text-slate-400">{t.V}V {t.E}E {t.D}D · <span className="font-bold text-slate-100">{t.Pts}pt</span></span>} />
-          </div>
-        )}
-      </section>
+      {/* Power Ranking — Times */}
+      {powerTeams.length > 0 && (
+        <section>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+            <Trophy className="w-4 h-4" /> Power Ranking — Times
+          </h2>
+          <Card className="p-3">
+            <PowerRankingTeamsList rows={powerTeams.slice(0, 12)} state={state} />
+          </Card>
+        </section>
+      )}
 
-      {/* Stats de jogadores (do game) */}
+      {/* Power Ranking — Jogadores em campo */}
+      {powerPlayers.length > 0 && (
+        <section>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+            <Star className="w-4 h-4" /> Power Ranking — Jogadores em campo
+          </h2>
+          <Card className="p-3">
+            <PowerRankingPlayersList rows={powerPlayers.slice(0, 15)} state={state} />
+          </Card>
+        </section>
+      )}
+
+      {/* Recordes */}
+      {records && <RecordsCard state={state} records={records} />}
+
+      {/* Stats individuais de jogadores (clássicas) */}
       <section>
         <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-          <Star className="w-4 h-4" /> Jogadores em campo
+          <BarChart3 className="w-4 h-4" /> Rankings por categoria
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} />
-          <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} />
-          <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} />
-          <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} />
+          <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} state={state} />
+          <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} state={state} />
+          <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} state={state} />
+          <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} state={state} />
         </div>
       </section>
+
+      {/* Timeline */}
+      {timeline.length > 0 && <TimelineCard state={state} events={timeline} />}
+
+      {noStatsYet && (
+        <Card className="p-4 text-xs text-slate-500 italic text-center">
+          Sem jogos contabilizados ainda. Comece a registrar resultados pra desbloquear as estatísticas.
+        </Card>
+      )}
     </div>
   );
+}
+
+/* ========== Trajetória do Campeão ========== */
+function ChampionPathCard({ state, championPath }) {
+  const { champion, matches } = championPath;
+  return (
+    <Card className="p-4 border-amber-700/40 bg-amber-950/10">
+      <h3 className="text-sm font-bold uppercase tracking-wider text-amber-300 mb-3 flex items-center gap-2">
+        <Crown className="w-4 h-4" /> Caminho do campeão — {champion.flag} {champion.name}
+      </h3>
+      <div className="space-y-1.5">
+        {matches.map((m) => {
+          const isHome = m.homeTeamId === champion.id;
+          const opp = getTeamById(state, isHome ? m.awayTeamId : m.homeTeamId);
+          const champScore = isHome ? m.homeScore : m.awayScore;
+          const oppScore = isHome ? m.awayScore : m.homeScore;
+          const lbl = m.stage === 'group'
+            ? `Grupo ${m.group} · R${m.round}`
+            : (STAGE_LABELS[m.stage] || m.stage);
+          const won = champScore > oppScore;
+          const tied = champScore === oppScore;
+          return (
+            <div key={m.id} className="grid grid-cols-[100px_1fr_auto] items-center gap-2 text-sm border-t border-amber-800/30 pt-1.5 first:border-0 first:pt-0">
+              <div className="text-[10px] uppercase tracking-wider text-amber-400/80 font-bold">{lbl}</div>
+              <div className="truncate">
+                vs <span className="font-bold">{opp?.flag} {opp?.name}</span>
+              </div>
+              <div className={cls('font-mono font-black tabular-nums text-sm px-2 py-0.5 rounded',
+                won ? 'bg-emerald-900/40 text-emerald-200' :
+                tied ? 'bg-slate-800 text-slate-300' :
+                'bg-slate-800 text-slate-400')}>
+                {champScore}–{oppScore}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/* ========== Power Ranking — Times ========== */
+function PowerRankingTeamsList({ rows, state }) {
+  const stageName = { 0: '—', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
+  return (
+    <div className="space-y-1">
+      {rows.map((t, i) => {
+        const ownerColor = getOwnerColor(state, t.owner);
+        return (
+          <div key={t.teamId}
+            className={cls('flex items-center gap-2 p-2 rounded transition',
+              t.isChampion && 'bg-amber-900/30 border border-amber-700/40',
+              i === 0 && !t.isChampion && 'bg-emerald-900/20',
+            )}
+            style={!t.isChampion && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
+          >
+            <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
+              i === 0 ? 'text-amber-400' :
+              i < 4 ? 'text-emerald-400' :
+              'text-slate-500'
+            )}>{i + 1}</span>
+            <span className="text-base">{t.flag}</span>
+            <div className="flex-1 truncate min-w-0">
+              <div className="font-bold truncate flex items-center gap-1.5">
+                {t.name}
+                {t.isChampion && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+              </div>
+            </div>
+            <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+            <div className="text-[10px] text-slate-400 tabular-nums text-right hidden sm:block min-w-[80px]">
+              {t.P}j · {t.Pts}pt · {t.SG > 0 ? '+' : ''}{t.SG}
+            </div>
+            <div className="text-[10px] uppercase font-bold text-slate-500 min-w-[28px] text-center">
+              {stageName[t.stageReached] || '—'}
+            </div>
+            <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
+              {t.powerScore.toFixed(1)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ========== Power Ranking — Jogadores ========== */
+function PowerRankingPlayersList({ rows, state }) {
+  return (
+    <div className="space-y-1">
+      {rows.map((p, i) => {
+        const ownerColor = getOwnerColor(state, p.owner);
+        return (
+          <div key={`${p.teamId}|${p.playerName}`}
+            className={cls('flex items-center gap-2 p-2 rounded transition',
+              p.isChampionTeam && 'bg-amber-900/20',
+              i === 0 && 'bg-emerald-900/20',
+            )}
+            style={!p.isChampionTeam && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
+          >
+            <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
+              i === 0 ? 'text-amber-400' :
+              i < 3 ? 'text-emerald-400' :
+              'text-slate-500'
+            )}>{i + 1}</span>
+            <span className="text-sm">{p.teamFlag}</span>
+            <div className="flex-1 truncate min-w-0">
+              <div className="font-bold truncate text-sm flex items-center gap-1.5">
+                {p.playerName}
+                {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400" />}
+              </div>
+              <div className="text-[10px] text-slate-500 truncate">{p.teamName}</div>
+            </div>
+            <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-2">
+              {p.goals > 0 && <span className="tabular-nums text-emerald-400">⚽{p.goals}</span>}
+              {p.assists > 0 && <span className="tabular-nums text-sky-400">🤝{p.assists}</span>}
+              {p.avg > 0 && <span className="tabular-nums text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
+              {p.yellows > 0 && <span className="tabular-nums text-yellow-500">🟨{p.yellows}</span>}
+              {p.reds > 0 && <span className="tabular-nums text-red-400">🟥{p.reds}</span>}
+            </div>
+            <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
+              {p.powerScore.toFixed(1)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ========== Recordes ========== */
+function RecordsCard({ state, records }) {
+  const { biggestRout, mostGoalsMatch, mostCardsMatch, bestSoloPerformance, bestRating } = records;
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Award className="w-4 h-4" /> Recordes do torneio
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {biggestRout && (
+          <RecordCell title="Maior goleada" emoji="💥"
+            primary={`${biggestRout.diff} de diferença`}
+            detail={<MatchSummary state={state} match={biggestRout.match} />} />
+        )}
+        {mostGoalsMatch && (
+          <RecordCell title="Jogo mais movimentado" emoji="🔥"
+            primary={`${mostGoalsMatch.total} gols`}
+            detail={<MatchSummary state={state} match={mostGoalsMatch.match} />} />
+        )}
+        {bestSoloPerformance && bestSoloPerformance.goals >= 2 && (
+          <RecordCell title="Atuação individual" emoji="⚽"
+            primary={`${bestSoloPerformance.playerName} fez ${bestSoloPerformance.goals} gols`}
+            detail={<MatchSummary state={state} match={bestSoloPerformance.match} />} />
+        )}
+        {bestRating && (
+          <RecordCell title="Maior nota" emoji="⭐"
+            primary={`${bestSoloPerformance && bestSoloPerformance.playerName === bestRating.playerName ? '' : bestRating.playerName} ${bestRating.rating.toFixed(1)}`.trim()}
+            detail={<MatchSummary state={state} match={bestRating.match} />} />
+        )}
+        {mostCardsMatch && (
+          <RecordCell title="Jogo mais nervoso" emoji="🟨"
+            primary={`${mostCardsMatch.cards} cartões`}
+            detail={<MatchSummary state={state} match={mostCardsMatch.match} />} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RecordCell({ title, emoji, primary, detail }) {
+  return (
+    <Card className="p-3">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{title}</div>
+      <div className="text-base font-bold flex items-center gap-2 mb-1">
+        <span className="text-xl">{emoji}</span>
+        {primary}
+      </div>
+      <div className="text-[11px] text-slate-400">{detail}</div>
+    </Card>
+  );
+}
+
+function MatchSummary({ state, match }) {
+  const home = getTeamById(state, match.homeTeamId);
+  const away = getTeamById(state, match.awayTeamId);
+  const lbl = match.stage === 'group' ? `Grupo ${match.group}` : (STAGE_LABELS[match.stage] || match.stage);
+  return (
+    <span>
+      {home?.flag} {home?.name} <span className="font-mono font-bold text-slate-200">{match.homeScore}–{match.awayScore}</span> {away?.name} {away?.flag}
+      <span className="text-slate-600"> · {lbl}</span>
+    </span>
+  );
+}
+
+/* ========== Timeline / Feed ========== */
+function TimelineCard({ state, events }) {
+  /* Limita a 20 eventos mais recentes pra não estourar */
+  const display = events.slice(0, 20);
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Clock className="w-4 h-4" /> Linha do tempo
+      </h2>
+      <Card className="p-3">
+        <div className="space-y-2">
+          {display.map((ev, i) => <TimelineEvent key={i} state={state} ev={ev} />)}
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+function TimelineEvent({ state, ev }) {
+  if (ev.kind === 'champion') {
+    return (
+      <div className="flex items-start gap-2 p-2 bg-amber-900/20 border border-amber-700/40 rounded">
+        <Crown className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+        <div className="text-sm">
+          <span className="font-bold text-amber-200">{ev.champion.flag} {ev.champion.name} é o campeão!</span>
+          <div className="text-xs text-amber-300/70">
+            Dono: {ev.champion.owner === 'p1' ? state.player1Name : state.player2Name}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (ev.kind === 'hattrick') {
+    const match = ev.match;
+    return (
+      <div className="flex items-start gap-2 p-2 border border-emerald-700/30 rounded">
+        <Goal className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+        <div className="text-xs">
+          <span className="font-bold text-emerald-300">{ev.playerName}</span> fez {ev.goals === 3 ? 'hat-trick' : `${ev.goals} gols`}
+          <div className="text-slate-500 mt-0.5"><MatchSummary state={state} match={match} /></div>
+        </div>
+      </div>
+    );
+  }
+  if (ev.kind === 'penalties') {
+    return (
+      <div className="flex items-start gap-2 p-2 border border-amber-700/30 rounded">
+        <Zap className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+        <div className="text-xs">
+          <span className="font-bold text-amber-300">Decidido nos pênaltis</span>
+          <div className="text-slate-500 mt-0.5"><MatchSummary state={state} match={ev.match} /></div>
+        </div>
+      </div>
+    );
+  }
+  /* match-result default */
+  const m = ev.match;
+  const isUpset = isUpsetResult(m, state);
+  return (
+    <div className="flex items-start gap-2 p-1.5 text-xs">
+      <div className="w-4 h-4 mt-0.5 flex-shrink-0 flex items-center justify-center">
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+      </div>
+      <div className="flex-1">
+        <MatchSummary state={state} match={m} />
+        {isUpset && <span className="ml-2 text-amber-400 text-[10px] uppercase font-bold">Zebra!</span>}
+      </div>
+    </div>
+  );
+}
+
+/* Heurística simples de "zebra": vencedor da fase de grupos com pote 3 ou 4 contra time pote 1 ou 2 */
+function isUpsetResult(m, state) {
+  if (m.stage !== 'group') return false;
+  if (m.homeScore === m.awayScore) return false;
+  const winnerTeamId = m.homeScore > m.awayScore ? m.homeTeamId : m.awayTeamId;
+  const loserTeamId  = m.homeScore > m.awayScore ? m.awayTeamId : m.homeTeamId;
+  const winner = getTeamById(state, winnerTeamId);
+  const loser  = getTeamById(state, loserTeamId);
+  return winner && loser && winner.pot > 2 && loser.pot < winner.pot;
 }
 
 function KpiCell({ label, value, highlight }) {
@@ -2284,30 +2953,7 @@ function KpiCell({ label, value, highlight }) {
   );
 }
 
-function TeamStatsList({ title, list, render, state }) {
-  return (
-    <Card className="p-3">
-      <h3 className="text-sm font-bold uppercase tracking-wider mb-2 text-slate-300">{title}</h3>
-      {list.length === 0 ? (
-        <div className="text-xs text-slate-600 italic py-2">Sem dados ainda.</div>
-      ) : (
-        <div className="space-y-1">
-          {list.map((t, i) => (
-            <div key={t.teamId} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
-              <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
-              <span className="text-sm">{t.flag}</span>
-              <span className="flex-1 truncate font-medium">{t.name}</span>
-              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-              <div className="min-w-[60px] text-right">{render(t)}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function StatsList({ title, icon, list, render }) {
+function StatsList({ title, icon, list, render, state }) {
   return (
     <Card className="p-3">
       <h3 className="text-sm font-bold uppercase tracking-wider mb-2 flex items-center gap-2">{icon}{title}</h3>
@@ -2319,10 +2965,14 @@ function StatsList({ title, icon, list, render }) {
             <div key={`${s.teamId}|${s.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
               <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
               {s.teamFlag && <span className="text-sm">{s.teamFlag}</span>}
-              <span className="flex-1 truncate">
+              <span className="flex-1 truncate min-w-0">
                 <span className="font-bold">{s.playerName}</span>
-                <span className="text-xs text-slate-500 ml-2">{s.teamName}</span>
+                <span className="text-xs text-slate-500 ml-1.5">{s.teamName}</span>
               </span>
+              {state && (
+                <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                  p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+              )}
               <div>{render(s)}</div>
             </div>
           ))}
