@@ -255,6 +255,7 @@ export function makeInitialState(formatId = 'wc2026') {
     koTeams: !format.hasGroups ? cloneKoTeams(format.initialKoTeams) : null,
     matches: [],
     teamRosters: {}, // { teamId: [playerName, ...] } — escalação persistente
+    playerPositions: {}, // { 'teamId|playerName': 'GOL'|'ZAG'|'LAT'|'MEI'|'ATA' }
   };
 }
 
@@ -1154,6 +1155,108 @@ export function computeOwnerStats(state) {
   own.p1.winPct = own.p1.P > 0 ? Math.round((own.p1.Pts / (own.p1.P * 3)) * 100) : 0;
   own.p2.winPct = own.p2.P > 0 ? Math.round((own.p2.Pts / (own.p2.P * 3)) * 100) : 0;
   return [own.p1, own.p2];
+}
+
+/* ============================================================
+   POSIÇÕES DOS JOGADORES
+   ============================================================ */
+export const POSITIONS = [
+  { id: 'GOL', label: 'Goleiro',     short: 'GOL', color: '#facc15' },
+  { id: 'ZAG', label: 'Zagueiro',    short: 'ZAG', color: '#60a5fa' },
+  { id: 'LAT', label: 'Lateral',     short: 'LAT', color: '#38bdf8' },
+  { id: 'MEI', label: 'Meio-campo',  short: 'MEI', color: '#a78bfa' },
+  { id: 'ATA', label: 'Atacante',    short: 'ATA', color: '#f87171' },
+];
+
+export function getPlayerPosition(state, teamId, playerName) {
+  const key = `${teamId}|${playerName}`;
+  return state.playerPositions?.[key] || null;
+}
+
+/* Power score adaptado por posição.
+   Goleiros valorizam mais a nota; atacantes mais o gol. */
+function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
+  const stageBonus = (maxStage ?? 0) * 3;
+  const champBonus = isChampionTeam ? 6 : 0;
+  const matchesBonus = Math.log2(s.ratingCount + 1) * 2;
+  const cardPenalty = (s.yellows * 1) + (s.reds * 4);
+  const avg = s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
+  let coreScore;
+  switch (position) {
+    case 'GOL':
+      coreScore = (avg * 12) + (s.assists * 1.5);
+      break;
+    case 'ZAG':
+      coreScore = (avg * 9) + (s.goals * 3) + (s.assists * 1.5);
+      break;
+    case 'LAT':
+      coreScore = (avg * 8) + (s.goals * 3.5) + (s.assists * 2.5);
+      break;
+    case 'MEI':
+      coreScore = (avg * 7) + (s.goals * 3.5) + (s.assists * 3.5);
+      break;
+    case 'ATA':
+      coreScore = (avg * 6) + (s.goals * 5) + (s.assists * 2);
+      break;
+    default:
+      coreScore = (avg * 6) + (s.goals * 4) + (s.assists * 2);
+  }
+  return coreScore + stageBonus + champBonus + matchesBonus - cardPenalty;
+}
+
+/* Computes player stats with position info and position-adjusted score */
+export function computePlayersWithPosition(state) {
+  const stats = computePlayerStats(state);
+  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const champ = getChampion(state);
+  return stats
+    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0)
+    .map((s) => {
+      const position = getPlayerPosition(state, s.teamId, s.playerName);
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const stageReached = maxStageByTeam[s.teamId] ?? 0;
+      const isChampionTeam = champ?.id === s.teamId;
+      const posScore = position
+        ? getPositionAdjustedScore({ ...s, avg }, position, stageReached, isChampionTeam)
+        : null;
+      return { ...s, avg, position, stageReached, isChampionTeam, posScore };
+    });
+}
+
+/* Ranking de jogadores por posição (top N) */
+export function computePlayersByPosition(state, positionId, limit = 10) {
+  return computePlayersWithPosition(state)
+    .filter((p) => p.position === positionId && p.posScore != null)
+    .sort((a, b) => b.posScore - a.posScore)
+    .slice(0, limit);
+}
+
+/* Seleciona o time do torneio na formação 4-3-3:
+   1 GOL · 2 ZAG · 2 LAT · 3 MEI · 3 ATA */
+export function computeBestXI(state) {
+  const all = computePlayersWithPosition(state);
+  const byPos = {};
+  for (const pid of ['GOL', 'ZAG', 'LAT', 'MEI', 'ATA']) {
+    byPos[pid] = all
+      .filter((p) => p.position === pid && p.posScore != null)
+      .sort((a, b) => b.posScore - a.posScore);
+  }
+  return {
+    GOL: byPos.GOL.slice(0, 1),
+    ZAG: byPos.ZAG.slice(0, 2),
+    LAT: byPos.LAT.slice(0, 2),
+    MEI: byPos.MEI.slice(0, 3),
+    ATA: byPos.ATA.slice(0, 3),
+    available: byPos,
+  };
 }
 
 /* ============================================================
