@@ -13,15 +13,16 @@ import {
 } from './lib/localHistory.js';
 import {
   FORMATS, getFormat, STAGE_LABELS, STAGE_ORDER_INDEX, TIEBREAKERS,
-  CARD_RULE_LABELS, DEFAULT_TIEBREAKERS,
+  CARD_RULE_LABELS, DEFAULT_TIEBREAKERS, POSITIONS,
   makeInitialState, makeGroupMatches, makeKnockoutMatches,
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
   autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
   getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
-  computeBestThirds,
+  computeBestThirds, getPlayerPosition,
   computeHeadToHead, getUpcomingMatches, getNotablePlayersForTeam,
   computeTournamentRecords, getChampionPath,
   computePowerRankingTeams, computePowerRankingPlayers, computeTimelineEvents,
+  computePlayersByPosition, computeBestXI,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -2023,7 +2024,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
         <table className="w-full text-xs">
           <thead>
             <tr className="text-[9px] uppercase font-bold text-slate-500 tracking-wider">
-              <th className="text-left pb-1 pr-1">Jogador</th>
+              <th className="text-left pb-1 pr-1">Pos · Jogador</th>
               <th className="pb-1 px-0.5 w-12" title="Gols"><Goal className="w-3.5 h-3.5 text-emerald-400 inline" /></th>
               <th className="pb-1 px-0.5 w-12" title="Assistências"><Hand className="w-3.5 h-3.5 text-sky-400 inline" /></th>
               <th className="pb-1 px-0.5 w-10" title="Amarelos"><span className="inline-block w-2 h-3 bg-yellow-400 rounded-sm" /></th>
@@ -2047,11 +2048,19 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
                 assists={countEv(player, 'assist')}
                 yellows={countEv(player, 'yellow')}
                 reds={countEv(player, 'red')}
+                position={getPlayerPosition(state, team.id, player)}
                 onIncrement={(t) => incrementEvent(player, t)}
                 onDecrement={(t) => decrementEvent(player, t)}
                 onRename={(nn) => renamePlayer(player, nn)}
                 onSetRating={(v) => setRating(player, v)}
                 onRemove={() => removePlayerEverywhere(player)}
+                onSetPosition={(pos) => {
+                  const key = `${team.id}|${player}`;
+                  const newPos = { ...(state.playerPositions || {}) };
+                  if (pos) newPos[key] = pos;
+                  else delete newPos[key];
+                  update({ playerPositions: newPos });
+                }}
               />
             ))}
           </tbody>
@@ -2083,19 +2092,23 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
 }
 
 /* Linha de jogador na tabela com contadores compactos */
-function PlayerRow({ player, rating, goals, assists, yellows, reds, onIncrement, onDecrement, onRename, onSetRating, onRemove }) {
+function PlayerRow({ player, rating, goals, assists, yellows, reds, position, onIncrement, onDecrement, onRename, onSetRating, onRemove, onSetPosition }) {
   const [draftName, setDraftName] = useState(player);
   useEffect(() => { setDraftName(player); }, [player]);
+  const posDef = POSITIONS.find((p) => p.id === position);
 
   return (
     <tr className="border-t border-slate-800/40">
       <td className="pr-1 py-1">
-        <input
-          value={draftName}
-          onChange={(e) => setDraftName(e.target.value)}
-          onBlur={() => onRename(draftName)}
-          className="w-full bg-transparent text-xs px-1 py-1 rounded border border-transparent hover:border-slate-700 focus:border-lime-400 outline-none"
-        />
+        <div className="flex items-center gap-1">
+          <PositionPicker value={position} onChange={onSetPosition} />
+          <input
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onBlur={() => onRename(draftName)}
+            className="w-full bg-transparent text-xs px-1 py-1 rounded border border-transparent hover:border-slate-700 focus:border-lime-400 outline-none"
+          />
+        </div>
       </td>
       <td className="px-0.5 py-1">
         <Counter value={goals}    onPlus={() => onIncrement('goal')}    onMinus={() => onDecrement('goal')}    color="emerald" />
@@ -2124,6 +2137,30 @@ function PlayerRow({ player, rating, goals, assists, yellows, reds, onIncrement,
         </button>
       </td>
     </tr>
+  );
+}
+
+/* Seletor de posição compacto — dropdown nativo estilizado */
+function PositionPicker({ value, onChange }) {
+  const posDef = POSITIONS.find((p) => p.id === value);
+  return (
+    <select
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="text-[9px] font-black uppercase tracking-tight rounded px-1 py-0.5 border outline-none cursor-pointer flex-shrink-0"
+      style={{
+        backgroundColor: posDef ? `${posDef.color}30` : 'rgb(15 23 42 / 0.6)',
+        borderColor: posDef ? `${posDef.color}80` : 'rgb(51 65 85)',
+        color: posDef ? posDef.color : 'rgb(100 116 139)',
+        width: '40px',
+      }}
+      title="Posição"
+    >
+      <option value="" className="bg-slate-900 text-slate-500">—</option>
+      {POSITIONS.map((p) => (
+        <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">{p.short}</option>
+      ))}
+    </select>
   );
 }
 
@@ -2554,6 +2591,14 @@ function StatsView({ state, allTeams }) {
   const records       = useMemo(() => computeTournamentRecords(state),   [state.matches]);
   const championPath  = useMemo(() => getChampionPath(state),            [state.matches]);
   const timeline      = useMemo(() => computeTimelineEvents(state),      [state.matches]);
+  const bestXI        = useMemo(() => computeBestXI(state),              [state.matches, state.playerPositions]);
+  const byPosition    = useMemo(() => {
+    const map = {};
+    for (const p of POSITIONS) {
+      map[p.id] = computePlayersByPosition(state, p.id, 6);
+    }
+    return map;
+  }, [state.matches, state.playerPositions]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
@@ -2639,6 +2684,23 @@ function StatsView({ state, allTeams }) {
           <Card className="p-3">
             <PowerRankingPlayersList rows={powerPlayers.slice(0, 15)} state={state} />
           </Card>
+        </section>
+      )}
+
+      {/* Time do Torneio (4-3-3) */}
+      <BestXIField state={state} bestXI={bestXI} />
+
+      {/* Rankings por posição */}
+      {POSITIONS.some((p) => byPosition[p.id].length > 0) && (
+        <section>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+            <Award className="w-4 h-4" /> Melhores por posição
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {POSITIONS.map((pos) => (
+              <PositionRanking key={pos.id} posDef={pos} list={byPosition[pos.id]} state={state} />
+            ))}
+          </div>
         </section>
       )}
 
@@ -2950,6 +3012,168 @@ function KpiCell({ label, value, highlight }) {
       <div className="text-[9px] uppercase tracking-wider text-slate-500">{label}</div>
       <div className={cls('font-black text-lg tabular-nums', highlight ? 'text-lime-300' : 'text-slate-100')}>{value}</div>
     </div>
+  );
+}
+
+/* ========== Time do Torneio (formação 4-3-3) ========== */
+function BestXIField({ state, bestXI }) {
+  const total = bestXI.GOL.length + bestXI.ZAG.length + bestXI.LAT.length + bestXI.MEI.length + bestXI.ATA.length;
+  if (total === 0) {
+    return (
+      <section>
+        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" /> Time do torneio (4-3-3)
+        </h2>
+        <Card className="p-4 text-center text-xs text-slate-500 italic">
+          Defina a posição dos jogadores (GOL / ZAG / LAT / MEI / ATA) nos jogos pra desbloquear o time do torneio.
+        </Card>
+      </section>
+    );
+  }
+  const expected = { GOL: 1, ZAG: 2, LAT: 2, MEI: 3, ATA: 3 };
+  const missing = [];
+  for (const k of Object.keys(expected)) {
+    const have = bestXI[k].length;
+    const need = expected[k];
+    if (have < need) missing.push(`${need - have} ${POSITIONS.find((p) => p.id === k).label}${need - have > 1 ? 's' : ''}`);
+  }
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Users className="w-4 h-4" /> Time do torneio (4-3-3)
+      </h2>
+      <Card className="p-4 border-emerald-700/40" style={{ background: 'linear-gradient(180deg, rgb(6 78 59 / 0.35), rgb(2 44 34 / 0.5))' }}>
+        {/* Campo de futebol */}
+        <div className="relative mx-auto" style={{ maxWidth: '420px', aspectRatio: '2 / 3' }}>
+          {/* Fundo verde com linhas brancas */}
+          <div className="absolute inset-0 rounded-lg overflow-hidden" style={{
+            background: 'repeating-linear-gradient(180deg, rgba(34, 197, 94, 0.25) 0px, rgba(34, 197, 94, 0.15) 28px, rgba(34, 197, 94, 0.25) 56px)',
+            border: '2px solid rgba(255, 255, 255, 0.2)',
+          }}>
+            {/* Linha do meio campo */}
+            <div className="absolute left-0 right-0 top-1/2 h-px bg-white/25" />
+            {/* Círculo central */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/25" style={{ width: '22%', aspectRatio: '1' }} />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-white/40" />
+            {/* Grande área de cima (ATA) */}
+            <div className="absolute left-1/4 right-1/4 top-0 h-[16%] border-2 border-t-0 border-white/20 rounded-b" />
+            {/* Pequena área de cima */}
+            <div className="absolute left-[37%] right-[37%] top-0 h-[7%] border-2 border-t-0 border-white/20 rounded-b" />
+            {/* Grande área de baixo (GOL) */}
+            <div className="absolute left-1/4 right-1/4 bottom-0 h-[16%] border-2 border-b-0 border-white/20 rounded-t" />
+            <div className="absolute left-[37%] right-[37%] bottom-0 h-[7%] border-2 border-b-0 border-white/20 rounded-t" />
+          </div>
+
+          {/* Linhas de jogadores */}
+          <div className="absolute inset-0 flex flex-col justify-between py-5 px-2">
+            {/* ATA (topo) */}
+            <div className="flex justify-around items-center gap-1">
+              {bestXI.ATA.map((p, i) => <PlayerPin key={i} player={p} state={state} />)}
+              {Array.from({ length: 3 - bestXI.ATA.length }).map((_, i) => <PlayerSlotEmpty key={`ata-${i}`} pos="ATA" />)}
+            </div>
+            {/* MEI */}
+            <div className="flex justify-around items-center gap-1">
+              {bestXI.MEI.map((p, i) => <PlayerPin key={i} player={p} state={state} />)}
+              {Array.from({ length: 3 - bestXI.MEI.length }).map((_, i) => <PlayerSlotEmpty key={`mei-${i}`} pos="MEI" />)}
+            </div>
+            {/* DEF: LAT - ZAG - ZAG - LAT */}
+            <div className="flex justify-between items-center gap-1 px-1">
+              {bestXI.LAT[0] ? <PlayerPin player={bestXI.LAT[0]} state={state} /> : <PlayerSlotEmpty pos="LAT" />}
+              {bestXI.ZAG[0] ? <PlayerPin player={bestXI.ZAG[0]} state={state} /> : <PlayerSlotEmpty pos="ZAG" />}
+              {bestXI.ZAG[1] ? <PlayerPin player={bestXI.ZAG[1]} state={state} /> : <PlayerSlotEmpty pos="ZAG" />}
+              {bestXI.LAT[1] ? <PlayerPin player={bestXI.LAT[1]} state={state} /> : <PlayerSlotEmpty pos="LAT" />}
+            </div>
+            {/* GOL */}
+            <div className="flex justify-center items-center">
+              {bestXI.GOL[0] ? <PlayerPin player={bestXI.GOL[0]} state={state} /> : <PlayerSlotEmpty pos="GOL" />}
+            </div>
+          </div>
+        </div>
+
+        {missing.length > 0 && (
+          <div className="mt-3 text-[11px] text-amber-300/80 text-center">
+            Faltando: {missing.join(', ')}. Defina a posição de mais jogadores para preencher.
+          </div>
+        )}
+      </Card>
+    </section>
+  );
+}
+
+function PlayerPin({ player, state }) {
+  const ownerColor = getOwnerColor(state, player.owner);
+  const posDef = POSITIONS.find((p) => p.id === player.position);
+  return (
+    <div className="flex flex-col items-center" style={{ minWidth: '70px', maxWidth: '90px' }}>
+      <div className="relative w-9 h-9 rounded-full flex items-center justify-center shadow-lg border-2 border-white" style={{ backgroundColor: ownerColor }}>
+        <span className="text-base">{player.teamFlag}</span>
+        {posDef && (
+          <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black bg-slate-900 text-white px-1 py-0.5 rounded border" style={{ borderColor: posDef.color, color: posDef.color }}>
+            {posDef.short}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 text-center max-w-full">
+        <div className="text-[10px] font-bold text-white truncate leading-tight" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
+          {player.playerName}
+        </div>
+        <div className="text-[9px] text-emerald-100/70 truncate leading-tight">
+          {player.avg > 0 && <span>⭐{player.avg.toFixed(2)} </span>}
+          {player.goals > 0 && <span className="text-emerald-200">{player.goals}G</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlayerSlotEmpty({ pos }) {
+  const posDef = POSITIONS.find((p) => p.id === pos);
+  return (
+    <div className="flex flex-col items-center opacity-40" style={{ minWidth: '70px', maxWidth: '90px' }}>
+      <div className="w-9 h-9 rounded-full border-2 border-dashed border-white/40" />
+      <div className="text-[9px] font-bold text-white/60 mt-1">{posDef?.short || '?'}</div>
+    </div>
+  );
+}
+
+/* Ranking individual de uma posição */
+function PositionRanking({ posDef, list, state }) {
+  return (
+    <Card className="p-3" style={{ borderColor: `${posDef.color}50` }}>
+      <h3 className="text-sm font-bold uppercase tracking-wider mb-2 flex items-center gap-2" style={{ color: posDef.color }}>
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-black border" style={{ borderColor: posDef.color }}>{posDef.short}</span>
+        {posDef.label}
+      </h3>
+      {list.length === 0 ? (
+        <div className="text-xs text-slate-600 italic py-2">Nenhum jogador atribuído a essa posição ainda.</div>
+      ) : (
+        <div className="space-y-1">
+          {list.map((p, i) => (
+            <div key={`${p.teamId}|${p.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
+              <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+              <span className="text-sm">{p.teamFlag}</span>
+              <div className="flex-1 truncate min-w-0">
+                <div className="font-bold truncate text-sm flex items-center gap-1">
+                  {p.playerName}
+                  {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">{p.teamName}</div>
+              </div>
+              <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+              <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[80px] justify-end">
+                {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
+                {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
+              </div>
+              <div className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right">
+                {p.posScore.toFixed(1)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
