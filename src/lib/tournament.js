@@ -1796,6 +1796,141 @@ export function computeGroupScenarios(state, matchId) {
   return { match: m, group: groupLetter, scenarios: result };
 }
 
+/* ============================================================
+   MÍNIMO NECESSÁRIO PARA CLASSIFICAÇÃO
+   Pra cada time do grupo, determina o que precisa do jogo atual
+   ============================================================ */
+export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return {};
+
+  const groupObj = state.groups.find((g) => g.letter === groupLetter);
+  if (!groupObj) return {};
+
+  const currentMatch = state.matches.find((m) => m.id === currentMatchId);
+  if (!currentMatch || currentMatch.played || currentMatch.stage !== 'group') return {};
+
+  const allGroupMatches = state.matches.filter((m) => m.stage === 'group' && m.group === groupLetter);
+  const otherMatches = state.matches.filter((mm) => !(mm.stage === 'group' && mm.group === groupLetter));
+  const pendingMatches = allGroupMatches.filter((m) => !m.played);
+
+  /* Limita pra não estourar (3^4 = 81 cenários é o teto) */
+  if (pendingMatches.length === 0 || pendingMatches.length > 4) return {};
+
+  const directQualified = 2;
+  const currentMatchPendingIdx = pendingMatches.findIndex((m) => m.id === currentMatchId);
+
+  /* Enumera todos os 3^n cenários */
+  const numScenarios = Math.pow(3, pendingMatches.length);
+  const teamResults = {}; // teamId → array of { currentResult, classified }
+  for (const t of groupObj.teams) teamResults[t.id] = [];
+
+  for (let i = 0; i < numScenarios; i++) {
+    let n = i;
+    const outcomes = pendingMatches.map(() => {
+      const r = n % 3; // 0 = home wins, 1 = draw, 2 = away wins
+      n = Math.floor(n / 3);
+      return r;
+    });
+
+    const simulated = allGroupMatches.map((m) => {
+      if (m.played) return m;
+      const pIdx = pendingMatches.findIndex((p) => p.id === m.id);
+      const outcome = outcomes[pIdx];
+      let hs, as;
+      if (outcome === 0) { hs = 2; as = 1; }
+      else if (outcome === 1) { hs = 1; as = 1; }
+      else { hs = 1; as = 2; }
+      return { ...m, played: true, homeScore: hs, awayScore: as };
+    });
+
+    const virtualState = { ...state, matches: [...otherMatches, ...simulated] };
+    const standing = computeGroupStanding(virtualState, groupLetter);
+    const currentResult = currentMatchPendingIdx >= 0 ? outcomes[currentMatchPendingIdx] : -1;
+
+    for (let pos = 0; pos < standing.length; pos++) {
+      const team = standing[pos];
+      const classified = pos < directQualified;
+      teamResults[team.id].push({ currentResult, classified });
+    }
+  }
+
+  /* Determina necessidade pra cada time */
+  const homeId = currentMatch.homeTeamId;
+  const awayId = currentMatch.awayTeamId;
+  const result = {};
+
+  for (const teamId of Object.keys(teamResults)) {
+    const cases = teamResults[teamId];
+    const total = cases.length;
+    const classifiedCount = cases.filter((c) => c.classified).length;
+
+    if (classifiedCount === total) {
+      result[teamId] = { type: 'guaranteed', label: 'Já classificado' };
+      continue;
+    }
+    if (classifiedCount === 0) {
+      result[teamId] = { type: 'impossible', label: 'Já eliminado' };
+      continue;
+    }
+
+    /* Conta casos classificados por resultado do jogo atual (0=home_wins, 1=draw, 2=away_wins) */
+    const byResult = {
+      0: { classified: 0, total: 0 },
+      1: { classified: 0, total: 0 },
+      2: { classified: 0, total: 0 },
+    };
+    for (const c of cases) {
+      if (c.currentResult < 0) continue;
+      byResult[c.currentResult].total++;
+      if (c.classified) byResult[c.currentResult].classified++;
+    }
+    const fullClassify = (r) => byResult[r].total > 0 && byResult[r].classified === byResult[r].total;
+    const someClassify = (r) => byResult[r].classified > 0;
+
+    const isHome = teamId === homeId;
+    const isAway = teamId === awayId;
+
+    if (!isHome && !isAway) {
+      result[teamId] = { type: 'depends_others', label: 'Depende dos outros jogos do grupo' };
+      continue;
+    }
+
+    /* Outcomes do ponto de vista do time:
+       Pro home: 0 = vitória dele, 1 = empate, 2 = derrota dele
+       Pro away: 2 = vitória dele, 1 = empate, 0 = derrota dele */
+    const winR  = isHome ? 0 : 2;
+    const drawR = 1;
+    const lossR = isHome ? 2 : 0;
+
+    if (fullClassify(lossR)) {
+      result[teamId] = { type: 'guaranteed', label: 'Já classificado' };
+    } else if (!someClassify(winR)) {
+      result[teamId] = { type: 'impossible', label: 'Já eliminado' };
+    } else if (fullClassify(drawR) && fullClassify(winR)) {
+      result[teamId] = {
+        type: 'needs_min',
+        label: 'Empate basta',
+        detail: someClassify(lossR) ? 'Pode até perder em alguns cenários' : null,
+      };
+    } else if (fullClassify(winR)) {
+      result[teamId] = {
+        type: 'needs_min',
+        label: 'Precisa vencer',
+        detail: someClassify(drawR) ? 'Empate só com ajuda de outros' : null,
+      };
+    } else {
+      result[teamId] = {
+        type: 'needs_help',
+        label: 'Vencer + torcer',
+        detail: `Classifica em ${classifiedCount} de ${total} cenários`,
+      };
+    }
+  }
+
+  return result;
+}
+
 /* Status matemático de cada time num grupo:
    - 'classified': matematicamente classificado (mesmo nos piores cenários)
    - 'eliminated': matematicamente eliminado (mesmo nos melhores cenários)
