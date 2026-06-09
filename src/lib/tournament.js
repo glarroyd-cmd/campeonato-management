@@ -1737,6 +1737,7 @@ export function computeGroupScenarios(state, matchId) {
   if (!m || m.stage !== 'group') return null;
   if (m.played) return null; /* já tem resultado, sem cenários */
 
+  const format = getFormat(state.formatId);
   const groupLetter = m.group;
   const home = getTeamById(state, m.homeTeamId);
   const away = getTeamById(state, m.awayTeamId);
@@ -1749,17 +1750,47 @@ export function computeGroupScenarios(state, matchId) {
   ];
 
   const allGroupMatches = state.matches.filter((mm) => mm.stage === 'group' && mm.group === groupLetter);
+  const firstStage = format.hasGroups ? format.knockoutStages[0] : null;
+
   const result = scenarios.map((sc) => {
+    /* Constrói state virtual com este resultado simulado */
     const simulated = allGroupMatches.map((mm) => {
       if (mm.id === matchId) {
         return { ...mm, played: true, homeScore: sc.homeScore, awayScore: sc.awayScore };
       }
       return mm;
     });
-    return {
-      ...sc,
-      standing: simulateGroupStandingForScenario(state, groupLetter, simulated),
-    };
+    const otherMatches = state.matches.filter((mm) => !(mm.stage === 'group' && mm.group === groupLetter));
+    const virtualState = { ...state, matches: [...otherMatches, ...simulated] };
+
+    const standing = computeGroupStanding(virtualState, groupLetter);
+
+    /* Simula seeding do mata-mata pra esse cenário */
+    let matchups = [];
+    if (firstStage) {
+      const { matches: simSeededMatches } = recalcKnockoutSeeding(virtualState);
+      const koLeg1 = simSeededMatches.filter((mm) => mm.stage === firstStage && !mm.isExtra && (mm.leg === 1 || mm.leg == null));
+      matchups = standing.map((row, idx) => {
+        const ko = koLeg1.find((km) => km.homeTeamId === row.id || km.awayTeamId === row.id);
+        let opponent = null;
+        let qualified = false;
+        if (ko) {
+          qualified = true;
+          const oppId = ko.homeTeamId === row.id ? ko.awayTeamId : ko.homeTeamId;
+          if (oppId) opponent = getTeamById(virtualState, oppId);
+        }
+        return {
+          teamId: row.id,
+          teamFlag: row.flag,
+          teamName: row.name,
+          position: idx + 1,
+          qualified,
+          opponent,
+        };
+      });
+    }
+
+    return { ...sc, standing, matchups };
   });
 
   return { match: m, group: groupLetter, scenarios: result };
