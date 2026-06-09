@@ -24,7 +24,7 @@ import {
   computePowerRankingTeams, computePowerRankingPlayers, computeTimelineEvents,
   computePlayersByPosition, computeBestXI,
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
-  computeGroupScenarios, computeGroupTeamStatus,
+  computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -1881,28 +1881,26 @@ function FavoriteBadge({ state, home, away }) {
 /* === Cenários de classificação (fase de grupos) === */
 function GroupScenariosCard({ state, matchId }) {
   const data = useMemo(() => computeGroupScenarios(state, matchId), [state.matches, state.playerPositions, matchId]);
-  const teamStatuses = useMemo(() => {
+  const minimumNeeds = useMemo(() => {
     const match = state.matches.find((m) => m.id === matchId);
     if (!match || match.stage !== 'group') return {};
-    return computeGroupTeamStatus(state, match.group);
+    return computeGroupMinimumNeeds(state, match.group, matchId);
   }, [state.matches, matchId]);
 
   if (!data) return null;
   const { match, group, scenarios } = data;
-  const home = getTeamById(state, match.homeTeamId);
-  const away = getTeamById(state, match.awayTeamId);
   const format = getFormat(state.formatId);
   const bestThirdsCount = format.bestThirds || 0;
+  const groupObj = state.groups.find((g) => g.letter === group);
+  const teamsInGroup = groupObj?.teams || [];
 
-  /* Status dos dois times deste jogo */
-  const homeStatus = teamStatuses[match.homeTeamId];
-  const awayStatus = teamStatuses[match.awayTeamId];
-
-  const statusLabel = (st) => {
-    if (!st) return null;
-    if (st.status === 'classified') return { text: 'Já classificado', color: 'text-emerald-400 bg-emerald-950/50 border-emerald-700/40' };
-    if (st.status === 'eliminated') return { text: 'Já eliminado',     color: 'text-red-400 bg-red-950/50 border-red-700/40' };
-    return { text: 'Em disputa', color: 'text-amber-400 bg-amber-950/50 border-amber-700/40' };
+  /* Configuração visual por tipo de status */
+  const styleByType = {
+    guaranteed:     { bg: 'bg-emerald-950/50 border-emerald-700/40', text: 'text-emerald-300', dot: 'bg-emerald-400' },
+    impossible:     { bg: 'bg-red-950/50 border-red-700/40',         text: 'text-red-300',     dot: 'bg-red-400' },
+    needs_min:      { bg: 'bg-amber-950/50 border-amber-700/40',     text: 'text-amber-300',   dot: 'bg-amber-400' },
+    needs_help:     { bg: 'bg-orange-950/50 border-orange-700/40',   text: 'text-orange-300',  dot: 'bg-orange-400' },
+    depends_others: { bg: 'bg-slate-900/60 border-slate-700',        text: 'text-slate-300',   dot: 'bg-slate-400' },
   };
 
   return (
@@ -1911,29 +1909,35 @@ function GroupScenariosCard({ state, matchId }) {
         <BarChart3 className="w-3.5 h-3.5" /> Cenários de classificação · Grupo {group}
       </h3>
 
-      {/* Status dos times deste jogo */}
-      <div className="grid grid-cols-2 gap-2 mb-4">
-        {[
-          { team: home, st: homeStatus },
-          { team: away, st: awayStatus },
-        ].map(({ team, st }) => {
-          const lbl = statusLabel(st);
-          if (!team || !lbl) return null;
-          return (
-            <div key={team.id} className={cls('p-2 rounded border text-xs', lbl.color)}>
-              <div className="font-bold flex items-center gap-1.5 truncate">
-                {team.flag} <span className="truncate">{team.name}</span>
-              </div>
-              <div className="font-bold text-[11px] uppercase mt-0.5">{lbl.text}</div>
-              {st.status === 'in_dispute' && (
-                <div className="text-[10px] mt-1 opacity-80">
-                  Melhor: {st.bestPos}º · Pior: {st.worstPos}º
+      {/* Mínimo necessário pra cada time do grupo */}
+      {teamsInGroup.length > 0 && Object.keys(minimumNeeds).length > 0 && (
+        <div className="mb-4">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">O que cada time precisa</div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            {teamsInGroup.map((team) => {
+              const need = minimumNeeds[team.id];
+              if (!need) return null;
+              const sty = styleByType[need.type] || styleByType.depends_others;
+              const isInGame = team.id === match.homeTeamId || team.id === match.awayTeamId;
+              return (
+                <div key={team.id} className={cls('p-2 rounded border', sty.bg, isInGame && 'ring-1 ring-lime-500/40')}>
+                  <div className="flex items-center gap-1.5 text-xs mb-1 truncate">
+                    <span>{team.flag}</span>
+                    <span className="font-bold truncate">{team.name}</span>
+                  </div>
+                  <div className={cls('flex items-center gap-1.5 text-[11px] font-bold uppercase', sty.text)}>
+                    <span className={cls('w-1.5 h-1.5 rounded-full', sty.dot)} />
+                    {need.label}
+                  </div>
+                  {need.detail && (
+                    <div className="text-[10px] text-slate-500 mt-1 leading-tight">{need.detail}</div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Cenários: V_home / E / V_away */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1950,7 +1954,7 @@ function GroupScenariosCard({ state, matchId }) {
       </div>
 
       <div className="text-[10px] text-slate-600 italic mt-3 leading-relaxed">
-        Simulações assumem placar mínimo (2-1 ou 1-2) ou empate 1-1. Status considera todos os jogos pendentes do grupo.
+        Simulações assumem placar mínimo (2-1 ou 1-2) ou empate 1-1. Análise considera todos os jogos pendentes do grupo.
       </div>
     </Card>
   );
