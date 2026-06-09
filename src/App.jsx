@@ -1954,7 +1954,7 @@ function GroupScenariosCard({ state, matchId }) {
       </div>
 
       <div className="text-[10px] text-slate-600 italic mt-3 leading-relaxed">
-        Simulações assumem placar mínimo (2-1 ou 1-2) ou empate 1-1. Análise considera todos os jogos pendentes do grupo.
+        Análise considera saldo de gols e melhores 3ºs lugares. Outros grupos com jogos pendentes podem alterar a posição entre 3ºs lugares.
       </div>
     </Card>
   );
