@@ -1957,7 +1957,7 @@ function GroupScenariosCard({ state, matchId }) {
 }
 
 function ScenarioColumn({ scenario, state, currentHomeId, currentAwayId, bestThirdsCount }) {
-  const { label, homeScore, awayScore, standing, key } = scenario;
+  const { label, homeScore, awayScore, standing, matchups, key } = scenario;
   const accent =
     key === 'home_wins' ? 'border-emerald-700/40 bg-emerald-950/20' :
     key === 'draw'      ? 'border-slate-700 bg-slate-900/40' :
@@ -1992,6 +1992,35 @@ function ScenarioColumn({ scenario, state, currentHomeId, currentAwayId, bestThi
           })}
         </tbody>
       </table>
+
+      {/* Matchups do mata-mata pra cada classificado neste cenário */}
+      {matchups && matchups.some((mu) => mu.qualified) && (
+        <div className="mt-2 pt-2 border-t border-slate-800/40">
+          <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1 flex items-center gap-1">
+            <Trophy className="w-2.5 h-2.5" /> Mata-mata
+          </div>
+          <div className="space-y-1">
+            {matchups.filter((mu) => mu.qualified).map((mu) => {
+              const involved = mu.teamId === currentHomeId || mu.teamId === currentAwayId;
+              return (
+                <div key={mu.teamId} className={cls('flex items-center gap-1 text-[10px] leading-tight', involved && 'font-bold')}>
+                  <span className="text-slate-500 tabular-nums w-3">{mu.position}º</span>
+                  <span>{mu.teamFlag}</span>
+                  <span className="text-slate-600">vs</span>
+                  {mu.opponent ? (
+                    <>
+                      <span>{mu.opponent.flag}</span>
+                      <span className="truncate">{mu.opponent.name}</span>
+                    </>
+                  ) : (
+                    <span className="italic text-slate-600 truncate">a definir (outros grupos)</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
