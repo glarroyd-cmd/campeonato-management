@@ -6,76 +6,76 @@
 /* --- Times oficiais da Copa 2026 (sorteio 5/dez/2025 + repescagens mar/2026) --- */
 const WC2026_GROUPS = [
   { letter: 'A', teams: [
-    { name: 'México',             flag: '🇲🇽', pot: 1 },
-    { name: 'Coreia do Sul',      flag: '🇰🇷', pot: 2 },
-    { name: 'África do Sul',      flag: '🇿🇦', pot: 3 },
-    { name: 'República Tcheca',   flag: '🇨🇿', pot: 4 },
+    { name: 'México',             flag: '🇲🇽', pot: 1, eaRating: 77 },
+    { name: 'Coreia do Sul',      flag: '🇰🇷', pot: 2, eaRating: 76 },
+    { name: 'África do Sul',      flag: '🇿🇦', pot: 3, eaRating: 70 },
+    { name: 'República Tcheca',   flag: '🇨🇿', pot: 4, eaRating: 73 },
   ]},
   { letter: 'B', teams: [
-    { name: 'Canadá',             flag: '🇨🇦', pot: 1 },
-    { name: 'Suíça',              flag: '🇨🇭', pot: 2 },
-    { name: 'Catar',              flag: '🇶🇦', pot: 3 },
-    { name: 'Bósnia e Herzegovina', flag: '🇧🇦', pot: 4 },
+    { name: 'Canadá',             flag: '🇨🇦', pot: 1, eaRating: 75 },
+    { name: 'Suíça',              flag: '🇨🇭', pot: 2, eaRating: 76 },
+    { name: 'Catar',              flag: '🇶🇦', pot: 3, eaRating: 69 },
+    { name: 'Bósnia e Herzegovina', flag: '🇧🇦', pot: 4, eaRating: 73 },
   ]},
   { letter: 'C', teams: [
-    { name: 'Brasil',             flag: '🇧🇷', pot: 1 },
-    { name: 'Marrocos',           flag: '🇲🇦', pot: 2 },
-    { name: 'Escócia',            flag: '🏴󠁧󠁢󠁳󠁣󠁴󠁿', pot: 3 },
-    { name: 'Haiti',              flag: '🇭🇹', pot: 4 },
+    { name: 'Brasil',             flag: '🇧🇷', pot: 1, eaRating: 82 },
+    { name: 'Marrocos',           flag: '🇲🇦', pot: 2, eaRating: 79 },
+    { name: 'Escócia',            flag: '🏴󠁧󠁢󠁳󠁣󠁴󠁿', pot: 3, eaRating: 74 },
+    { name: 'Haiti',              flag: '🇭🇹', pot: 4, eaRating: 65 },
   ]},
   { letter: 'D', teams: [
-    { name: 'Estados Unidos',     flag: '🇺🇸', pot: 1 },
-    { name: 'Austrália',          flag: '🇦🇺', pot: 2 },
-    { name: 'Paraguai',           flag: '🇵🇾', pot: 3 },
-    { name: 'Turquia',            flag: '🇹🇷', pot: 4 },
+    { name: 'Estados Unidos',     flag: '🇺🇸', pot: 1, eaRating: 76 },
+    { name: 'Austrália',          flag: '🇦🇺', pot: 2, eaRating: 72 },
+    { name: 'Paraguai',           flag: '🇵🇾', pot: 3, eaRating: 73 },
+    { name: 'Turquia',            flag: '🇹🇷', pot: 4, eaRating: 75 },
   ]},
   { letter: 'E', teams: [
-    { name: 'Alemanha',           flag: '🇩🇪', pot: 1 },
-    { name: 'Equador',            flag: '🇪🇨', pot: 2 },
-    { name: 'Costa do Marfim',    flag: '🇨🇮', pot: 3 },
-    { name: 'Curaçao',            flag: '🇨🇼', pot: 4 },
+    { name: 'Alemanha',           flag: '🇩🇪', pot: 1, eaRating: 83 },
+    { name: 'Equador',            flag: '🇪🇨', pot: 2, eaRating: 75 },
+    { name: 'Costa do Marfim',    flag: '🇨🇮', pot: 3, eaRating: 76 },
+    { name: 'Curaçao',            flag: '🇨🇼', pot: 4, eaRating: 65 },
   ]},
   { letter: 'F', teams: [
-    { name: 'Países Baixos',      flag: '🇳🇱', pot: 1 },
-    { name: 'Japão',              flag: '🇯🇵', pot: 2 },
-    { name: 'Tunísia',            flag: '🇹🇳', pot: 3 },
-    { name: 'Suécia',             flag: '🇸🇪', pot: 4 },
+    { name: 'Países Baixos',      flag: '🇳🇱', pot: 1, eaRating: 83 },
+    { name: 'Japão',              flag: '🇯🇵', pot: 2, eaRating: 78 },
+    { name: 'Tunísia',            flag: '🇹🇳', pot: 3, eaRating: 73 },
+    { name: 'Suécia',             flag: '🇸🇪', pot: 4, eaRating: 78 },
   ]},
   { letter: 'G', teams: [
-    { name: 'Bélgica',            flag: '🇧🇪', pot: 1 },
-    { name: 'Irã',                flag: '🇮🇷', pot: 2 },
-    { name: 'Egito',              flag: '🇪🇬', pot: 3 },
-    { name: 'Nova Zelândia',      flag: '🇳🇿', pot: 4 },
+    { name: 'Bélgica',            flag: '🇧🇪', pot: 1, eaRating: 81 },
+    { name: 'Irã',                flag: '🇮🇷', pot: 2, eaRating: 73 },
+    { name: 'Egito',              flag: '🇪🇬', pot: 3, eaRating: 75 },
+    { name: 'Nova Zelândia',      flag: '🇳🇿', pot: 4, eaRating: 68 },
   ]},
   { letter: 'H', teams: [
-    { name: 'Espanha',            flag: '🇪🇸', pot: 1 },
-    { name: 'Uruguai',            flag: '🇺🇾', pot: 2 },
-    { name: 'Arábia Saudita',     flag: '🇸🇦', pot: 3 },
-    { name: 'Cabo Verde',         flag: '🇨🇻', pot: 4 },
+    { name: 'Espanha',            flag: '🇪🇸', pot: 1, eaRating: 85 },
+    { name: 'Uruguai',            flag: '🇺🇾', pot: 2, eaRating: 80 },
+    { name: 'Arábia Saudita',     flag: '🇸🇦', pot: 3, eaRating: 70 },
+    { name: 'Cabo Verde',         flag: '🇨🇻', pot: 4, eaRating: 66 },
   ]},
   { letter: 'I', teams: [
-    { name: 'França',             flag: '🇫🇷', pot: 1 },
-    { name: 'Senegal',            flag: '🇸🇳', pot: 2 },
-    { name: 'Noruega',            flag: '🇳🇴', pot: 3 },
-    { name: 'Iraque',             flag: '🇮🇶', pot: 4 },
+    { name: 'França',             flag: '🇫🇷', pot: 1, eaRating: 85 },
+    { name: 'Senegal',            flag: '🇸🇳', pot: 2, eaRating: 78 },
+    { name: 'Noruega',            flag: '🇳🇴', pot: 3, eaRating: 78 },
+    { name: 'Iraque',             flag: '🇮🇶', pot: 4, eaRating: 69 },
   ]},
   { letter: 'J', teams: [
-    { name: 'Argentina',          flag: '🇦🇷', pot: 1 },
-    { name: 'Áustria',            flag: '🇦🇹', pot: 2 },
-    { name: 'Argélia',            flag: '🇩🇿', pot: 3 },
-    { name: 'Jordânia',           flag: '🇯🇴', pot: 4 },
+    { name: 'Argentina',          flag: '🇦🇷', pot: 1, eaRating: 83 },
+    { name: 'Áustria',            flag: '🇦🇹', pot: 2, eaRating: 76 },
+    { name: 'Argélia',            flag: '🇩🇿', pot: 3, eaRating: 74 },
+    { name: 'Jordânia',           flag: '🇯🇴', pot: 4, eaRating: 67 },
   ]},
   { letter: 'K', teams: [
-    { name: 'Portugal',           flag: '🇵🇹', pot: 1 },
-    { name: 'Colômbia',           flag: '🇨🇴', pot: 2 },
-    { name: 'Uzbequistão',        flag: '🇺🇿', pot: 3 },
-    { name: 'RD Congo',           flag: '🇨🇩', pot: 4 },
+    { name: 'Portugal',           flag: '🇵🇹', pot: 1, eaRating: 84 },
+    { name: 'Colômbia',           flag: '🇨🇴', pot: 2, eaRating: 77 },
+    { name: 'Uzbequistão',        flag: '🇺🇿', pot: 3, eaRating: 68 },
+    { name: 'RD Congo',           flag: '🇨🇩', pot: 4, eaRating: 70 },
   ]},
   { letter: 'L', teams: [
-    { name: 'Inglaterra',         flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', pot: 1 },
-    { name: 'Croácia',            flag: '🇭🇷', pot: 2 },
-    { name: 'Gana',               flag: '🇬🇭', pot: 3 },
-    { name: 'Panamá',             flag: '🇵🇦', pot: 4 },
+    { name: 'Inglaterra',         flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', pot: 1, eaRating: 84 },
+    { name: 'Croácia',            flag: '🇭🇷', pot: 2, eaRating: 79 },
+    { name: 'Gana',               flag: '🇬🇭', pot: 3, eaRating: 73 },
+    { name: 'Panamá',             flag: '🇵🇦', pot: 4, eaRating: 69 },
   ]},
 ];
 
@@ -1338,7 +1338,7 @@ export function computeTournamentRecords(state) {
   const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
   if (real.length === 0) return null;
 
-  /* Maior goleada (maior diferença) */
+  /* Maior goleada (maior diferença, desempate por mais gols totais) */
   let biggestRout = null;
   let mostGoalsMatch = null;
   let mostCardsMatch = null;
@@ -1346,7 +1346,11 @@ export function computeTournamentRecords(state) {
     const diff = Math.abs(m.homeScore - m.awayScore);
     const total = m.homeScore + m.awayScore;
     const cards = (m.events || []).filter((e) => e.type === 'yellow' || e.type === 'red').length;
-    if (!biggestRout || diff > biggestRout.diff) biggestRout = { match: m, diff, total };
+    if (!biggestRout ||
+        diff > biggestRout.diff ||
+        (diff === biggestRout.diff && total > biggestRout.total)) {
+      biggestRout = { match: m, diff, total };
+    }
     if (!mostGoalsMatch || total > mostGoalsMatch.total) mostGoalsMatch = { match: m, total };
     if (cards > 0 && (!mostCardsMatch || cards > mostCardsMatch.cards)) mostCardsMatch = { match: m, cards };
   }
@@ -1422,7 +1426,13 @@ export function computePowerRankingTeams(state) {
       const winPct = t.P > 0 ? t.Pts / (t.P * 3) : 0;
       const stageBonus = (maxStageByTeam[t.teamId] ?? 0) * 4;
       const isChampion = champ?.id === t.teamId;
-      const score = (winPct * 30) + (t.SG * 1.5) + stageBonus + (isChampion ? 10 : 0);
+      /* Score combina:
+         - Aproveitamento (peso 30)
+         - Saldo de gols (peso 1.5)
+         - Gols pró (peso 0.5) → desempate quando saldo é igual
+         - Bônus por fase atingida no mata-mata
+         - Bônus por ser campeão */
+      const score = (winPct * 30) + (t.SG * 1.5) + (t.GP * 0.5) + stageBonus + (isChampion ? 10 : 0);
       return { ...t, stageReached: maxStageByTeam[t.teamId] ?? 0, isChampion, powerScore: score };
     })
     .sort((a, b) => b.powerScore - a.powerScore);
@@ -1515,6 +1525,315 @@ export function computeTimelineEvents(state) {
 
   events.sort((a, b) => b.t - a.t);
   return events;
+}
+
+/* ============================================================
+   SEQUÊNCIAS (STREAKS)
+   Maior sequência de vitórias e maior invencibilidade de cada time
+   ============================================================ */
+export function computeTeamStreaks(state) {
+  /* Reúne jogos por time em ordem cronológica do torneio */
+  const matchesByTeam = {};
+  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
+  real.sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+  for (const m of real) {
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if (!matchesByTeam[tid]) matchesByTeam[tid] = [];
+      const isHome = m.homeTeamId === tid;
+      const ownScore = isHome ? m.homeScore : m.awayScore;
+      const oppScore = isHome ? m.awayScore : m.homeScore;
+      /* Pro mata-mata, considera resultado real (incluindo pênaltis se houver) */
+      let result;
+      if (m.stage !== 'group') {
+        const outcome = getMatchOutcome(state.matches, m.stage, m.koIndex);
+        if (outcome.decided) {
+          result = outcome.winner === tid ? 'W' : 'L';
+        } else {
+          result = ownScore > oppScore ? 'W' : ownScore < oppScore ? 'L' : 'D';
+        }
+      } else {
+        result = ownScore > oppScore ? 'W' : ownScore < oppScore ? 'L' : 'D';
+      }
+      matchesByTeam[tid].push(result);
+    }
+  }
+  /* Computa streaks */
+  const streaks = [];
+  for (const tid of Object.keys(matchesByTeam)) {
+    const team = getTeamById(state, tid);
+    if (!team) continue;
+    const seq = matchesByTeam[tid];
+    let winStreak = 0, currentWinStreak = 0;
+    let unbeatenStreak = 0, currentUnbeatenStreak = 0;
+    for (const r of seq) {
+      if (r === 'W') {
+        currentWinStreak++;
+        currentUnbeatenStreak++;
+      } else if (r === 'D') {
+        currentWinStreak = 0;
+        currentUnbeatenStreak++;
+      } else {
+        currentWinStreak = 0;
+        currentUnbeatenStreak = 0;
+      }
+      if (currentWinStreak > winStreak) winStreak = currentWinStreak;
+      if (currentUnbeatenStreak > unbeatenStreak) unbeatenStreak = currentUnbeatenStreak;
+    }
+    streaks.push({
+      teamId: tid,
+      teamName: team.name,
+      teamFlag: team.flag,
+      owner: team.owner,
+      winStreak,
+      unbeatenStreak,
+      currentWinStreak,
+      currentUnbeatenStreak,
+      gamesPlayed: seq.length,
+    });
+  }
+  return streaks;
+}
+
+/* ============================================================
+   CLEAN SHEETS
+   Jogos em que o time não sofreu gols + goleiros atribuídos
+   ============================================================ */
+export function computeCleanSheets(state) {
+  const map = {};
+  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
+  for (const m of real) {
+    /* Time da casa sofreu m.awayScore gols */
+    if (!map[m.homeTeamId]) map[m.homeTeamId] = { teamId: m.homeTeamId, played: 0, cleanSheets: 0, goalsConceded: 0 };
+    if (!map[m.awayTeamId]) map[m.awayTeamId] = { teamId: m.awayTeamId, played: 0, cleanSheets: 0, goalsConceded: 0 };
+    map[m.homeTeamId].played++;
+    map[m.homeTeamId].goalsConceded += m.awayScore;
+    if (m.awayScore === 0) map[m.homeTeamId].cleanSheets++;
+    map[m.awayTeamId].played++;
+    map[m.awayTeamId].goalsConceded += m.homeScore;
+    if (m.homeScore === 0) map[m.awayTeamId].cleanSheets++;
+  }
+  /* Anexa info do time + goleiros atribuídos */
+  const result = Object.values(map).map((row) => {
+    const team = getTeamById(state, row.teamId);
+    if (!team) return null;
+    /* Procura goleiros atribuídos no roster do time */
+    const goalkeepers = (state.teamRosters?.[row.teamId] || [])
+      .filter((name) => state.playerPositions?.[`${row.teamId}|${name}`] === 'GOL');
+    return {
+      ...row,
+      teamName: team.name,
+      teamFlag: team.flag,
+      owner: team.owner,
+      goalkeepers,
+    };
+  }).filter(Boolean);
+  return result.sort((a, b) => b.cleanSheets - a.cleanSheets || a.goalsConceded - b.goalsConceded);
+}
+
+/* ============================================================
+   DEPENDÊNCIA OFENSIVA
+   % dos gols do time em que o jogador participou (gol ou assist)
+   ============================================================ */
+export function computeOffensiveDependency(state) {
+  /* Total de gols por time (apenas gols feitos POR esse time, não contra) */
+  const goalsByTeam = {};
+  /* Participações (gol + assist) por jogador */
+  const participationByPlayer = {}; // 'teamId|playerName' → count
+  const goalsByPlayer = {};
+  const assistsByPlayer = {};
+
+  const real = state.matches.filter((m) => m.played && !m.autoPlayed);
+  for (const m of real) {
+    goalsByTeam[m.homeTeamId] = (goalsByTeam[m.homeTeamId] || 0) + m.homeScore;
+    goalsByTeam[m.awayTeamId] = (goalsByTeam[m.awayTeamId] || 0) + m.awayScore;
+    for (const ev of (m.events || [])) {
+      if (!ev.playerName || !ev.teamId) continue;
+      const k = `${ev.teamId}|${ev.playerName}`;
+      if (ev.type === 'goal') {
+        goalsByPlayer[k] = (goalsByPlayer[k] || 0) + 1;
+        participationByPlayer[k] = (participationByPlayer[k] || 0) + 1;
+      } else if (ev.type === 'assist') {
+        assistsByPlayer[k] = (assistsByPlayer[k] || 0) + 1;
+        participationByPlayer[k] = (participationByPlayer[k] || 0) + 1;
+      }
+    }
+  }
+  /* Monta o ranking — só jogadores cujo time fez ao menos 2 gols */
+  const result = [];
+  for (const k of Object.keys(participationByPlayer)) {
+    const [teamId, playerName] = k.split('|');
+    const team = getTeamById(state, teamId);
+    if (!team) continue;
+    const teamGoals = goalsByTeam[teamId] || 0;
+    if (teamGoals < 2) continue;
+    const participations = participationByPlayer[k];
+    const pct = (participations / teamGoals) * 100;
+    result.push({
+      teamId,
+      teamName: team.name,
+      teamFlag: team.flag,
+      owner: team.owner,
+      playerName,
+      goals: goalsByPlayer[k] || 0,
+      assists: assistsByPlayer[k] || 0,
+      participations,
+      teamGoals,
+      percentage: pct,
+    });
+  }
+  return result.sort((a, b) => b.percentage - a.percentage || b.participations - a.participations);
+}
+
+/* ============================================================
+   SURPRESA DO TORNEIO
+   Times de pote 3 ou 4 que se destacaram (pontuação + fase atingida)
+   ============================================================ */
+export function computeTournamentSurprises(state) {
+  const stats = computeTeamStats(state);
+  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const stageName = { 0: 'Grupos', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º lugar', 5: 'Final' };
+  return stats
+    .filter((t) => t.P > 0)
+    .map((t) => {
+      const team = getTeamById(state, t.teamId);
+      if (!team || (team.pot ?? 1) < 3) return null;
+      const stageReached = maxStageByTeam[t.teamId] ?? 0;
+      /* Score: pontos por jogo × 5 + fase atingida × 8 + saldo × 1 — favorece times que avançaram */
+      const surpriseScore = ((t.Pts / Math.max(1, t.P)) * 5) + (stageReached * 8) + t.SG;
+      return {
+        ...t,
+        pot: team.pot,
+        stageReached,
+        stageLabel: stageName[stageReached] || 'Grupos',
+        surpriseScore,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.surpriseScore - a.surpriseScore);
+}
+
+/* ============================================================
+   CENÁRIOS DE CLASSIFICAÇÃO (FASE DE GRUPOS)
+   Pra um jogo específico, mostra como a classificação fica
+   com cada resultado possível + status matemático de cada time
+   ============================================================ */
+function simulateGroupStandingForScenario(state, groupLetter, simulatedMatches) {
+  /* Cria um state "virtual" usando os matches simulados pra esse grupo */
+  const otherMatches = state.matches.filter((m) => !(m.stage === 'group' && m.group === groupLetter));
+  const virtualState = { ...state, matches: [...otherMatches, ...simulatedMatches] };
+  return computeGroupStanding(virtualState, groupLetter);
+}
+
+export function computeGroupScenarios(state, matchId) {
+  const m = state.matches.find((mm) => mm.id === matchId);
+  if (!m || m.stage !== 'group') return null;
+  if (m.played) return null; /* já tem resultado, sem cenários */
+
+  const groupLetter = m.group;
+  const home = getTeamById(state, m.homeTeamId);
+  const away = getTeamById(state, m.awayTeamId);
+
+  /* Para cada resultado plausível, simula a classificação */
+  const scenarios = [
+    { key: 'home_wins',  label: `Vitória ${home?.name}`, homeScore: 2, awayScore: 1 },
+    { key: 'draw',       label: 'Empate',                 homeScore: 1, awayScore: 1 },
+    { key: 'away_wins',  label: `Vitória ${away?.name}`,  homeScore: 1, awayScore: 2 },
+  ];
+
+  const allGroupMatches = state.matches.filter((mm) => mm.stage === 'group' && mm.group === groupLetter);
+  const result = scenarios.map((sc) => {
+    const simulated = allGroupMatches.map((mm) => {
+      if (mm.id === matchId) {
+        return { ...mm, played: true, homeScore: sc.homeScore, awayScore: sc.awayScore };
+      }
+      return mm;
+    });
+    return {
+      ...sc,
+      standing: simulateGroupStandingForScenario(state, groupLetter, simulated),
+    };
+  });
+
+  return { match: m, group: groupLetter, scenarios: result };
+}
+
+/* Status matemático de cada time num grupo:
+   - 'classified': matematicamente classificado (mesmo nos piores cenários)
+   - 'eliminated': matematicamente eliminado (mesmo nos melhores cenários)
+   - 'in_dispute': ainda em jogo */
+export function computeGroupTeamStatus(state, groupLetter) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return {};
+
+  const allGroupMatches = state.matches.filter((m) => m.stage === 'group' && m.group === groupLetter);
+  const groupObj = state.groups.find((g) => g.letter === groupLetter);
+  const teamsInGroup = (groupObj?.teams || []).map((t) => t.id);
+  const pendingMatches = allGroupMatches.filter((m) => !m.played);
+  const status = {};
+
+  /* Função pra contar pontos de um time num cenário de matches simulado */
+  const computePoints = (simMatches, teamId) => {
+    let pts = 0;
+    for (const m of simMatches) {
+      if (!m.played || m.autoPlayed) continue;
+      if (m.homeTeamId !== teamId && m.awayTeamId !== teamId) continue;
+      const isHome = m.homeTeamId === teamId;
+      const own = isHome ? m.homeScore : m.awayScore;
+      const opp = isHome ? m.awayScore : m.homeScore;
+      if (own > opp) pts += 3;
+      else if (own === opp) pts += 1;
+    }
+    return pts;
+  };
+
+  for (const teamId of teamsInGroup) {
+    /* Best case: time ganha todos os jogos restantes seus por 3-0,
+       todos os outros pendentes acabam empatados */
+    const bestSim = allGroupMatches.map((m) => {
+      if (m.played) return m;
+      if (m.homeTeamId === teamId) return { ...m, played: true, homeScore: 3, awayScore: 0 };
+      if (m.awayTeamId === teamId) return { ...m, played: true, homeScore: 0, awayScore: 3 };
+      return { ...m, played: true, homeScore: 0, awayScore: 0 };
+    });
+    /* Worst case: time perde todos por 0-3, outros pendentes os adversários do time ganham */
+    const worstSim = allGroupMatches.map((m) => {
+      if (m.played) return m;
+      if (m.homeTeamId === teamId) return { ...m, played: true, homeScore: 0, awayScore: 3 };
+      if (m.awayTeamId === teamId) return { ...m, played: true, homeScore: 3, awayScore: 0 };
+      /* outros — assume melhor para os adversários (vitória do mandante) */
+      return { ...m, played: true, homeScore: 3, awayScore: 0 };
+    });
+
+    const bestStanding = simulateGroupStandingForScenario(state, groupLetter, bestSim);
+    const worstStanding = simulateGroupStandingForScenario(state, groupLetter, worstSim);
+
+    const bestPos = bestStanding.findIndex((r) => r.id === teamId) + 1;
+    const worstPos = worstStanding.findIndex((r) => r.id === teamId) + 1;
+
+    /* Define quantos do grupo se classificam direto (top 2) */
+    const directQualified = 2;
+
+    let s;
+    if (worstPos <= directQualified) s = 'classified';  /* mesmo no pior cenário fica no top 2 */
+    else if (bestPos > directQualified + (format.bestThirds > 0 ? 1 : 0)) s = 'eliminated';
+    else s = 'in_dispute';
+
+    status[teamId] = {
+      status: s,
+      bestPos,
+      worstPos,
+      gamesRemaining: pendingMatches.filter((m) => m.homeTeamId === teamId || m.awayTeamId === teamId).length,
+    };
+  }
+  return status;
 }
 
 /* ============================================================
