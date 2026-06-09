@@ -1798,7 +1798,8 @@ export function computeGroupScenarios(state, matchId) {
 
 /* ============================================================
    MÍNIMO NECESSÁRIO PARA CLASSIFICAÇÃO
-   Pra cada time do grupo, determina o que precisa do jogo atual
+   Pra cada time do grupo, calcula a margem mínima de resultado
+   necessária no jogo atual pra se classificar (top 2 + melhores 3ºs).
    ============================================================ */
 export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
   const format = getFormat(state.formatId);
@@ -1812,122 +1813,155 @@ export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
 
   const allGroupMatches = state.matches.filter((m) => m.stage === 'group' && m.group === groupLetter);
   const otherMatches = state.matches.filter((mm) => !(mm.stage === 'group' && mm.group === groupLetter));
-  const pendingMatches = allGroupMatches.filter((m) => !m.played);
+  const otherPending = allGroupMatches.filter((m) => !m.played && m.id !== currentMatchId);
 
-  /* Limita pra não estourar (3^4 = 81 cenários é o teto) */
-  if (pendingMatches.length === 0 || pendingMatches.length > 4) return {};
+  /* Limita combinatória: outros pendentes deste grupo ≤ 3 (3^3 = 27 cenários por margem) */
+  if (otherPending.length > 3) return {};
 
   const directQualified = 2;
-  const currentMatchPendingIdx = pendingMatches.findIndex((m) => m.id === currentMatchId);
+  const bestThirdsCount = format.bestThirds || 0;
 
-  /* Enumera todos os 3^n cenários */
-  const numScenarios = Math.pow(3, pendingMatches.length);
-  const teamResults = {}; // teamId → array of { currentResult, classified }
-  for (const t of groupObj.teams) teamResults[t.id] = [];
+  /* Verifica se um time se classifica num estado simulado */
+  const isClassified = (simulatedGroupMatches, teamId) => {
+    const vs = { ...state, matches: [...otherMatches, ...simulatedGroupMatches] };
+    const standing = computeGroupStanding(vs, groupLetter);
+    const pos = standing.findIndex((r) => r.id === teamId);
+    if (pos < directQualified) return true;
+    if (pos === 2 && bestThirdsCount > 0) {
+      const bt = computeBestThirds(vs);
+      const me = bt.find((t) => t.id === teamId);
+      return me?.qualified === true;
+    }
+    return false;
+  };
 
-  for (let i = 0; i < numScenarios; i++) {
-    let n = i;
-    const outcomes = pendingMatches.map(() => {
-      const r = n % 3; // 0 = home wins, 1 = draw, 2 = away wins
-      n = Math.floor(n / 3);
-      return r;
-    });
-
-    const simulated = allGroupMatches.map((m) => {
+  /* Aplica resultados a todos os pendentes do grupo, dada uma combinação
+     de outcomes (0=home_wins, 1=draw, 2=away_wins) pros otherPending +
+     placar fixo pro currentMatch */
+  const buildSimulated = (currentHome, currentAway, otherOutcomes) => {
+    return allGroupMatches.map((m) => {
       if (m.played) return m;
-      const pIdx = pendingMatches.findIndex((p) => p.id === m.id);
-      const outcome = outcomes[pIdx];
+      if (m.id === currentMatchId) {
+        return { ...m, played: true, homeScore: currentHome, awayScore: currentAway };
+      }
+      const pIdx = otherPending.findIndex((p) => p.id === m.id);
+      const outcome = otherOutcomes[pIdx];
       let hs, as;
       if (outcome === 0) { hs = 2; as = 1; }
       else if (outcome === 1) { hs = 1; as = 1; }
       else { hs = 1; as = 2; }
       return { ...m, played: true, homeScore: hs, awayScore: as };
     });
+  };
 
-    const virtualState = { ...state, matches: [...otherMatches, ...simulated] };
-    const standing = computeGroupStanding(virtualState, groupLetter);
-    const currentResult = currentMatchPendingIdx >= 0 ? outcomes[currentMatchPendingIdx] : -1;
-
-    for (let pos = 0; pos < standing.length; pos++) {
-      const team = standing[pos];
-      const classified = pos < directQualified;
-      teamResults[team.id].push({ currentResult, classified });
+  /* Avalia uma margem (placar) específica pra um time:
+     retorna { allClassified, someClassified } sobre todos os outros pendentes */
+  const evalScore = (teamId, currentHome, currentAway) => {
+    let allClassified = true;
+    let someClassified = false;
+    const numOther = Math.pow(3, otherPending.length);
+    for (let i = 0; i < numOther; i++) {
+      let n = i;
+      const outcomes = otherPending.map(() => { const r = n % 3; n = Math.floor(n / 3); return r; });
+      const simulated = buildSimulated(currentHome, currentAway, outcomes);
+      const c = isClassified(simulated, teamId);
+      if (c) someClassified = true; else allClassified = false;
+      if (!allClassified && someClassified) break;
     }
-  }
+    return { allClassified, someClassified };
+  };
 
-  /* Determina necessidade pra cada time */
-  const homeId = currentMatch.homeTeamId;
-  const awayId = currentMatch.awayTeamId;
-  const result = {};
+  const determineNeeds = (teamId) => {
+    const isHome = teamId === currentMatch.homeTeamId;
+    const isAway = teamId === currentMatch.awayTeamId;
 
-  for (const teamId of Object.keys(teamResults)) {
-    const cases = teamResults[teamId];
-    const total = cases.length;
-    const classifiedCount = cases.filter((c) => c.classified).length;
-
-    if (classifiedCount === total) {
-      result[teamId] = { type: 'guaranteed', label: 'Já classificado' };
-      continue;
-    }
-    if (classifiedCount === 0) {
-      result[teamId] = { type: 'impossible', label: 'Já eliminado' };
-      continue;
-    }
-
-    /* Conta casos classificados por resultado do jogo atual (0=home_wins, 1=draw, 2=away_wins) */
-    const byResult = {
-      0: { classified: 0, total: 0 },
-      1: { classified: 0, total: 0 },
-      2: { classified: 0, total: 0 },
-    };
-    for (const c of cases) {
-      if (c.currentResult < 0) continue;
-      byResult[c.currentResult].total++;
-      if (c.classified) byResult[c.currentResult].classified++;
-    }
-    const fullClassify = (r) => byResult[r].total > 0 && byResult[r].classified === byResult[r].total;
-    const someClassify = (r) => byResult[r].classified > 0;
-
-    const isHome = teamId === homeId;
-    const isAway = teamId === awayId;
-
+    /* === Caso 1: Time NÃO joga o jogo atual === */
     if (!isHome && !isAway) {
-      result[teamId] = { type: 'depends_others', label: 'Depende dos outros jogos do grupo' };
-      continue;
+      const allPending = [currentMatch, ...otherPending];
+      if (allPending.length > 4) return { type: 'unknown', label: 'Análise indisponível' };
+      let allClass = true, someClass = false;
+      const numTotal = Math.pow(3, allPending.length);
+      for (let i = 0; i < numTotal; i++) {
+        let n = i;
+        const outcomes = allPending.map(() => { const r = n % 3; n = Math.floor(n / 3); return r; });
+        const simulated = allGroupMatches.map((m) => {
+          if (m.played) return m;
+          const pIdx = allPending.findIndex((p) => p.id === m.id);
+          const outcome = outcomes[pIdx];
+          let hs, as;
+          if (outcome === 0) { hs = 2; as = 1; }
+          else if (outcome === 1) { hs = 1; as = 1; }
+          else { hs = 1; as = 2; }
+          return { ...m, played: true, homeScore: hs, awayScore: as };
+        });
+        const c = isClassified(simulated, teamId);
+        if (c) someClass = true; else allClass = false;
+        if (!allClass && someClass) break;
+      }
+      if (allClass) return { type: 'guaranteed', label: 'Já classificado' };
+      if (!someClass) return { type: 'impossible', label: 'Já eliminado' };
+      return { type: 'depends_others', label: 'Depende dos outros jogos do grupo' };
     }
 
-    /* Outcomes do ponto de vista do time:
-       Pro home: 0 = vitória dele, 1 = empate, 2 = derrota dele
-       Pro away: 2 = vitória dele, 1 = empate, 0 = derrota dele */
-    const winR  = isHome ? 0 : 2;
-    const drawR = 1;
-    const lossR = isHome ? 2 : 0;
+    /* === Caso 2: Time JOGA o jogo atual — testa cada margem === */
+    /* Constrói lista de placares representativos por margem (do ponto de vista do time) */
+    const buildScore = (margin) => {
+      if (margin > 0) return isHome ? [margin, 0] : [0, margin];     // vitória por |margin|
+      if (margin < 0) return isHome ? [0, -margin] : [-margin, 0];   // derrota por |margin|
+      return [1, 1]; // empate
+    };
 
-    if (fullClassify(lossR)) {
-      result[teamId] = { type: 'guaranteed', label: 'Já classificado' };
-    } else if (!someClassify(winR)) {
-      result[teamId] = { type: 'impossible', label: 'Já eliminado' };
-    } else if (fullClassify(drawR) && fullClassify(winR)) {
-      result[teamId] = {
-        type: 'needs_min',
-        label: 'Empate basta',
-        detail: someClassify(lossR) ? 'Pode até perder em alguns cenários' : null,
-      };
-    } else if (fullClassify(winR)) {
-      result[teamId] = {
-        type: 'needs_min',
-        label: 'Precisa vencer',
-        detail: someClassify(drawR) ? 'Empate só com ajuda de outros' : null,
-      };
-    } else {
-      result[teamId] = {
-        type: 'needs_help',
-        label: 'Vencer + torcer',
-        detail: `Classifica em ${classifiedCount} de ${total} cenários`,
-      };
+    const margins = [4, 3, 2, 1, 0, -1, -2, -3, -4];
+    const evaluated = margins.map((margin) => {
+      const [hs, as] = buildScore(margin);
+      return { margin, hs, as, ...evalScore(teamId, hs, as) };
+    });
+
+    /* Casos extremos */
+    if (evaluated.every((e) => e.allClassified)) {
+      return { type: 'guaranteed', label: 'Já classificado' };
     }
+    if (evaluated.every((e) => !e.someClassified)) {
+      return { type: 'impossible', label: 'Já eliminado' };
+    }
+
+    /* worstAcceptable = a MAIS DESFAVORÁVEL margem que ainda garante classificação */
+    const worstAcceptable = [...evaluated]
+      .filter((e) => e.allClassified)
+      .sort((a, b) => a.margin - b.margin)[0]; // menor margem (mais negativa)
+
+    if (worstAcceptable) {
+      const m = worstAcceptable.margin;
+      let label;
+      if (m >= 4) label = 'Vitória por 4+ gols';
+      else if (m >= 1) label = m === 1 ? 'Vitória por 1 gol' : `Vitória por ${m} gols`;
+      else if (m === 0) label = 'Empate basta';
+      else if (m === -1) label = 'Pode perder por 1 gol';
+      else label = `Pode perder por até ${Math.abs(m)} gols`;
+      return { type: 'needs_min', label, margin: m };
+    }
+
+    /* Não há margem com garantia → vencer + torcer */
+    const minWinForChance = [...evaluated]
+      .filter((e) => e.someClassified && e.margin > 0)
+      .sort((a, b) => a.margin - b.margin)[0];
+
+    if (minWinForChance) {
+      const m = minWinForChance.margin;
+      const label = m >= 4 ? 'Vencer por 4+ gols + ajuda' :
+                    m === 1 ? 'Vencer + ajuda' :
+                    `Vencer por ${m}+ gols + ajuda`;
+      return { type: 'needs_help', label, margin: m };
+    }
+
+    /* fallback */
+    return { type: 'depends_others', label: 'Depende de combinação' };
+  };
+
+  const result = {};
+  for (const team of groupObj.teams) {
+    result[team.id] = determineNeeds(team.id);
   }
-
   return result;
 }
 
