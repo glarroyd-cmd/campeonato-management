@@ -23,6 +23,8 @@ import {
   computeTournamentRecords, getChampionPath,
   computePowerRankingTeams, computePowerRankingPlayers, computeTimelineEvents,
   computePlayersByPosition, computeBestXI,
+  computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
+  computeGroupScenarios, computeGroupTeamStatus,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -1720,7 +1722,10 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
       <Card className="p-4">
         <div className="text-xs uppercase tracking-wider text-slate-500 mb-3">{stageLabel}{legLabel}</div>
         <ScoreEntry match={match} home={home} away={away} onChange={setScore} p1Name={state.player1Name} p2Name={state.player2Name} p1Color={state.player1Color} p2Color={state.player2Color} />
+        <FavoriteBadge state={state} home={home} away={away} />
       </Card>
+
+      {!isKo && !match.played && <GroupScenariosCard state={state} matchId={matchId} />}
 
       {isKo && <KnockoutMatchExtras state={state} match={match} home={home} away={away} update={update} updateMatches={updateMatches} />}
 
@@ -1794,6 +1799,199 @@ function TeamHeader({ team, align = 'left', p1Name, p2Name, p1Color, p2Color }) 
         <span className="font-bold truncate">{team.name}</span>
         {team.owner && <OwnerTag owner={team.owner} p1Name={p1Name} p2Name={p2Name} p1Color={p1Color} p2Color={p2Color} />}
       </div>
+    </div>
+  );
+}
+
+/* === Favorito (baseado no Power Ranking do torneio) === */
+function FavoriteBadge({ state, home, away }) {
+  const power = useMemo(() => computePowerRankingTeams(state), [state.matches]);
+  const homePower = power.find((p) => p.teamId === home.id);
+  const awayPower = power.find((p) => p.teamId === away.id);
+
+  /* Nenhum dos dois jogou ainda */
+  if (!homePower && !awayPower) {
+    return (
+      <div className="mt-3 pt-3 border-t border-slate-800 text-center text-[11px] text-slate-500 italic">
+        Aguardando primeiros jogos para calcular o favorito.
+      </div>
+    );
+  }
+  /* Só um tem histórico — esse é o favorito por default */
+  if (!homePower || !awayPower) {
+    const fav = homePower ? home : away;
+    const other = homePower ? away : home;
+    const score = (homePower || awayPower).powerScore;
+    return (
+      <div className="mt-3 pt-3 border-t border-slate-800">
+        <div className="flex items-center justify-center gap-2 mt-1">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-700 text-emerald-50">
+            {fav.flag} {fav.name} · Favorito
+          </span>
+        </div>
+        <div className="text-[10px] text-slate-500 text-center mt-1.5 italic">
+          {other.name} ainda não tem histórico no torneio · Power Rank {score.toFixed(1)}
+        </div>
+      </div>
+    );
+  }
+
+  const hr = homePower.powerScore;
+  const ar = awayPower.powerScore;
+  const diff = Math.abs(hr - ar);
+
+  /* Diferença muito pequena = equilíbrio */
+  if (diff < 0.5) {
+    return (
+      <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-center gap-2 text-xs text-slate-400 flex-wrap">
+        <span className="font-mono tabular-nums">{hr.toFixed(1)}</span>
+        <span className="uppercase tracking-wider font-bold">Power Rank</span>
+        <span className="font-mono tabular-nums">{ar.toFixed(1)}</span>
+        <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-bold uppercase">Equilíbrio total</span>
+      </div>
+    );
+  }
+
+  const favoredHome = hr > ar;
+  const fav = favoredHome ? home : away;
+  /* Tiers calibrados pro range típico do Power Rank (geralmente 10-50) */
+  const tier =
+    diff >= 18 ? { label: 'Carrasco', color: 'bg-red-600 text-white' } :
+    diff >= 12 ? { label: 'Favorito firme', color: 'bg-amber-500 text-amber-950' } :
+    diff >= 6  ? { label: 'Favorito leve', color: 'bg-emerald-600 text-emerald-50' } :
+                 { label: 'Levemente favorecido', color: 'bg-slate-600 text-slate-100' };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800">
+      <div className="flex items-center justify-center gap-3 text-xs flex-wrap">
+        <span className={cls('font-mono tabular-nums font-bold', favoredHome ? 'text-emerald-300 text-base' : 'text-slate-500')}>{hr.toFixed(1)}</span>
+        <span className="uppercase tracking-wider font-bold text-slate-500">Power Rank</span>
+        <span className={cls('font-mono tabular-nums font-bold', !favoredHome ? 'text-emerald-300 text-base' : 'text-slate-500')}>{ar.toFixed(1)}</span>
+      </div>
+      <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
+        <span className={cls('inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider', tier.color)}>
+          {fav?.flag} {fav?.name} · {tier.label}
+        </span>
+        <span className="text-[10px] text-slate-500">+{diff.toFixed(1)} pts</span>
+      </div>
+    </div>
+  );
+}
+
+/* === Cenários de classificação (fase de grupos) === */
+function GroupScenariosCard({ state, matchId }) {
+  const data = useMemo(() => computeGroupScenarios(state, matchId), [state.matches, state.playerPositions, matchId]);
+  const teamStatuses = useMemo(() => {
+    const match = state.matches.find((m) => m.id === matchId);
+    if (!match || match.stage !== 'group') return {};
+    return computeGroupTeamStatus(state, match.group);
+  }, [state.matches, matchId]);
+
+  if (!data) return null;
+  const { match, group, scenarios } = data;
+  const home = getTeamById(state, match.homeTeamId);
+  const away = getTeamById(state, match.awayTeamId);
+  const format = getFormat(state.formatId);
+  const bestThirdsCount = format.bestThirds || 0;
+
+  /* Status dos dois times deste jogo */
+  const homeStatus = teamStatuses[match.homeTeamId];
+  const awayStatus = teamStatuses[match.awayTeamId];
+
+  const statusLabel = (st) => {
+    if (!st) return null;
+    if (st.status === 'classified') return { text: 'Já classificado', color: 'text-emerald-400 bg-emerald-950/50 border-emerald-700/40' };
+    if (st.status === 'eliminated') return { text: 'Já eliminado',     color: 'text-red-400 bg-red-950/50 border-red-700/40' };
+    return { text: 'Em disputa', color: 'text-amber-400 bg-amber-950/50 border-amber-700/40' };
+  };
+
+  return (
+    <Card className="p-4">
+      <h3 className="text-xs uppercase tracking-wider text-slate-400 font-bold mb-3 flex items-center gap-2">
+        <BarChart3 className="w-3.5 h-3.5" /> Cenários de classificação · Grupo {group}
+      </h3>
+
+      {/* Status dos times deste jogo */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {[
+          { team: home, st: homeStatus },
+          { team: away, st: awayStatus },
+        ].map(({ team, st }) => {
+          const lbl = statusLabel(st);
+          if (!team || !lbl) return null;
+          return (
+            <div key={team.id} className={cls('p-2 rounded border text-xs', lbl.color)}>
+              <div className="font-bold flex items-center gap-1.5 truncate">
+                {team.flag} <span className="truncate">{team.name}</span>
+              </div>
+              <div className="font-bold text-[11px] uppercase mt-0.5">{lbl.text}</div>
+              {st.status === 'in_dispute' && (
+                <div className="text-[10px] mt-1 opacity-80">
+                  Melhor: {st.bestPos}º · Pior: {st.worstPos}º
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Cenários: V_home / E / V_away */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {scenarios.map((sc) => (
+          <ScenarioColumn
+            key={sc.key}
+            scenario={sc}
+            state={state}
+            currentHomeId={match.homeTeamId}
+            currentAwayId={match.awayTeamId}
+            bestThirdsCount={bestThirdsCount}
+          />
+        ))}
+      </div>
+
+      <div className="text-[10px] text-slate-600 italic mt-3 leading-relaxed">
+        Simulações assumem placar mínimo (2-1 ou 1-2) ou empate 1-1. Status considera todos os jogos pendentes do grupo.
+      </div>
+    </Card>
+  );
+}
+
+function ScenarioColumn({ scenario, state, currentHomeId, currentAwayId, bestThirdsCount }) {
+  const { label, homeScore, awayScore, standing, key } = scenario;
+  const accent =
+    key === 'home_wins' ? 'border-emerald-700/40 bg-emerald-950/20' :
+    key === 'draw'      ? 'border-slate-700 bg-slate-900/40' :
+                          'border-blue-700/40 bg-blue-950/20';
+  return (
+    <div className={cls('rounded-lg border p-2', accent)}>
+      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1 truncate">{label}</div>
+      <div className="text-xs font-mono font-bold text-center mb-2 text-slate-200">{homeScore}–{awayScore}</div>
+      <table className="w-full text-[11px]">
+        <thead className="text-slate-600">
+          <tr>
+            <th className="text-left font-medium pb-1">#</th>
+            <th className="text-left font-medium pb-1">Time</th>
+            <th className="text-center font-medium pb-1">P</th>
+            <th className="text-center font-medium pb-1">SG</th>
+          </tr>
+        </thead>
+        <tbody>
+          {standing.map((r, i) => {
+            const involved = r.id === currentHomeId || r.id === currentAwayId;
+            let rowCls = '';
+            if (i < 2) rowCls = 'bg-emerald-950/40 text-emerald-100';
+            else if (i === 2 && bestThirdsCount > 0) rowCls = 'text-amber-300';
+            return (
+              <tr key={r.id} className={cls('border-t border-slate-800/40', rowCls, involved && 'font-bold')}>
+                <td className="py-1 tabular-nums">{i + 1}</td>
+                <td className="py-1 truncate"><span className="mr-1">{r.flag}</span>{r.name}</td>
+                <td className="text-center py-1 tabular-nums font-bold">{r.Pts}</td>
+                <td className="text-center py-1 tabular-nums">{r.SG > 0 ? '+' : ''}{r.SG}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2600,6 +2798,11 @@ function StatsView({ state, allTeams }) {
     return map;
   }, [state.matches, state.playerPositions]);
 
+  const streaks       = useMemo(() => computeTeamStreaks(state),         [state.matches]);
+  const cleanSheets   = useMemo(() => computeCleanSheets(state),         [state.matches, state.teamRosters, state.playerPositions]);
+  const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
+  const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
+
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
   const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg).slice(0, 10);
@@ -2719,6 +2922,15 @@ function StatsView({ state, allTeams }) {
           <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} state={state} />
         </div>
       </section>
+
+      {/* Sequências e Clean Sheets */}
+      {streaks.length > 0 && <StreaksAndCleanSheetsCard state={state} streaks={streaks} cleanSheets={cleanSheets} />}
+
+      {/* Dependência ofensiva */}
+      {offensiveDep.length > 0 && <OffensiveDependencyCard state={state} list={offensiveDep.slice(0, 10)} />}
+
+      {/* Surpresa do torneio */}
+      {surprises.length > 0 && <SurprisesCard state={state} list={surprises.slice(0, 8)} />}
 
       {/* Timeline */}
       {timeline.length > 0 && <TimelineCard state={state} events={timeline} />}
@@ -2886,7 +3098,7 @@ function RecordsCard({ state, records }) {
         )}
         {bestRating && (
           <RecordCell title="Maior nota" emoji="⭐"
-            primary={`${bestSoloPerformance && bestSoloPerformance.playerName === bestRating.playerName ? '' : bestRating.playerName} ${bestRating.rating.toFixed(1)}`.trim()}
+            primary={`${bestRating.playerName} ${bestRating.rating.toFixed(1)}`}
             detail={<MatchSummary state={state} match={bestRating.match} />} />
         )}
         {mostCardsMatch && (
@@ -3174,6 +3386,191 @@ function PositionRanking({ posDef, list, state }) {
         </div>
       )}
     </Card>
+  );
+}
+
+/* ========== Sequências e Clean Sheets ========== */
+function StreaksAndCleanSheetsCard({ state, streaks, cleanSheets }) {
+  const topWinStreaks = [...streaks].filter((s) => s.winStreak >= 2).sort((a, b) => b.winStreak - a.winStreak || b.currentWinStreak - a.currentWinStreak).slice(0, 5);
+  const topUnbeaten  = [...streaks].filter((s) => s.unbeatenStreak >= 2).sort((a, b) => b.unbeatenStreak - a.unbeatenStreak || b.currentUnbeatenStreak - a.currentUnbeatenStreak).slice(0, 5);
+  const topCleanSheets = [...cleanSheets].filter((c) => c.played >= 2).slice(0, 5);
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Zap className="w-4 h-4" /> Sequências & Defesa
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* Vitórias seguidas */}
+        <Card className="p-3">
+          <h3 className="text-xs uppercase tracking-wider mb-2 flex items-center gap-1.5 text-emerald-400 font-bold">
+            <Trophy className="w-3.5 h-3.5" /> Vitórias seguidas
+          </h3>
+          {topWinStreaks.length === 0 ? (
+            <div className="text-xs text-slate-600 italic">Nenhuma sequência de 2+ vitórias.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {topWinStreaks.map((s) => (
+                <div key={s.teamId} className="flex items-center gap-2 text-xs border-b border-slate-800/40 last:border-0 pb-1.5 last:pb-0">
+                  <span className="text-sm">{s.teamFlag}</span>
+                  <div className="flex-1 truncate">
+                    <div className="font-bold truncate">{s.teamName}</div>
+                    <div className="text-[10px] text-slate-500">
+                      <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                        p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                    </div>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <div className="font-black text-emerald-300 text-base leading-none">{s.winStreak}</div>
+                    {s.currentWinStreak >= 2 && s.currentWinStreak === s.winStreak && (
+                      <div className="text-[9px] text-emerald-400 uppercase font-bold mt-0.5">Em curso!</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Invencibilidade */}
+        <Card className="p-3">
+          <h3 className="text-xs uppercase tracking-wider mb-2 flex items-center gap-1.5 text-sky-400 font-bold">
+            <Award className="w-3.5 h-3.5" /> Invencibilidade
+          </h3>
+          {topUnbeaten.length === 0 ? (
+            <div className="text-xs text-slate-600 italic">Nenhuma sequência invicta de 2+ jogos.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {topUnbeaten.map((s) => (
+                <div key={s.teamId} className="flex items-center gap-2 text-xs border-b border-slate-800/40 last:border-0 pb-1.5 last:pb-0">
+                  <span className="text-sm">{s.teamFlag}</span>
+                  <div className="flex-1 truncate">
+                    <div className="font-bold truncate">{s.teamName}</div>
+                    <div className="text-[10px] text-slate-500">
+                      <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                        p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                    </div>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <div className="font-black text-sky-300 text-base leading-none">{s.unbeatenStreak}</div>
+                    {s.currentUnbeatenStreak >= 2 && s.currentUnbeatenStreak === s.unbeatenStreak && (
+                      <div className="text-[9px] text-sky-400 uppercase font-bold mt-0.5">Em curso!</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Clean sheets */}
+        <Card className="p-3">
+          <h3 className="text-xs uppercase tracking-wider mb-2 flex items-center gap-1.5 text-amber-400 font-bold">
+            <Goal className="w-3.5 h-3.5" /> Menos vazados
+          </h3>
+          {topCleanSheets.length === 0 ? (
+            <div className="text-xs text-slate-600 italic">Sem dados ainda.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {topCleanSheets.map((c) => (
+                <div key={c.teamId} className="flex items-center gap-2 text-xs border-b border-slate-800/40 last:border-0 pb-1.5 last:pb-0">
+                  <span className="text-sm">{c.teamFlag}</span>
+                  <div className="flex-1 truncate">
+                    <div className="font-bold truncate">{c.teamName}</div>
+                    {c.goalkeepers.length > 0 && (
+                      <div className="text-[10px] text-yellow-400 truncate">🧤 {c.goalkeepers.join(', ')}</div>
+                    )}
+                    {c.goalkeepers.length === 0 && (
+                      <div className="text-[10px] text-slate-600 italic">Goleiro não definido</div>
+                    )}
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <div className="font-black text-amber-300 text-base leading-none">{c.cleanSheets}/{c.played}</div>
+                    <div className="text-[9px] text-slate-500 mt-0.5">{c.goalsConceded} gols sofridos</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </section>
+  );
+}
+
+/* ========== Dependência Ofensiva ========== */
+function OffensiveDependencyCard({ state, list }) {
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Hand className="w-4 h-4" /> Carrega o time
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">— % dos gols do time em que o jogador participou</span>
+      </h2>
+      <Card className="p-3">
+        <div className="space-y-2">
+          {list.map((p, i) => (
+            <div key={`${p.teamId}|${p.playerName}`} className="flex items-center gap-2">
+              <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+              <span className="text-sm">{p.teamFlag}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm truncate">{p.playerName}</span>
+                  <span className="text-xs text-slate-500 truncate">{p.teamName}</span>
+                  <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                    p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                </div>
+                {/* Barra de % */}
+                <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mt-1">
+                  <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400" style={{ width: `${Math.min(100, p.percentage)}%` }} />
+                </div>
+              </div>
+              <div className="text-right tabular-nums min-w-[80px]">
+                <div className="font-black text-emerald-300 text-base leading-none">{p.percentage.toFixed(0)}%</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {p.goals > 0 && <span className="text-emerald-400">⚽{p.goals} </span>}
+                  {p.assists > 0 && <span className="text-sky-400">🤝{p.assists}</span>}
+                  <span className="text-slate-600"> /{p.teamGoals}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+/* ========== Surpresas do torneio ========== */
+function SurprisesCard({ state, list }) {
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Star className="w-4 h-4" /> Surpresas do torneio
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">— times de pote 3 e 4 que se destacaram</span>
+      </h2>
+      <Card className="p-3">
+        <div className="space-y-1.5">
+          {list.map((t, i) => (
+            <div key={t.teamId} className="flex items-center gap-2 text-sm">
+              <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+              <span>{t.flag}</span>
+              <div className="flex-1 truncate min-w-0">
+                <span className="font-bold truncate">{t.name}</span>
+                <span className="ml-2 inline-block text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">POTE {t.pot}</span>
+              </div>
+              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+              <div className="text-xs text-slate-400 tabular-nums hidden sm:block min-w-[60px] text-right">
+                {t.Pts}pt · {t.SG > 0 ? '+' : ''}{t.SG}
+              </div>
+              <div className="text-[10px] font-bold uppercase text-emerald-400 min-w-[55px] text-center">
+                {t.stageLabel}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </section>
   );
 }
 
