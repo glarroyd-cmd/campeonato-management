@@ -2037,6 +2037,274 @@ export function computeGroupTeamStatus(state, groupLetter) {
 }
 
 /* ============================================================
+   DADOS DE UM TIME (página de detalhe)
+   ============================================================ */
+export function computeTeamDetail(state, teamId) {
+  const team = getTeamById(state, teamId);
+  if (!team) return null;
+
+  /* Jogos do time em ordem cronológica do torneio */
+  const matches = state.matches
+    .filter((m) => (m.homeTeamId === teamId || m.awayTeamId === teamId) && m.played && !m.autoPlayed)
+    .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+
+  /* Stats agregados */
+  let GP = 0, GC = 0, V = 0, E = 0, D = 0;
+  for (const m of matches) {
+    const isHome = m.homeTeamId === teamId;
+    const own = isHome ? m.homeScore : m.awayScore;
+    const opp = isHome ? m.awayScore : m.homeScore;
+    GP += own;
+    GC += opp;
+    if (own > opp) V++;
+    else if (own < opp) D++;
+    else E++;
+  }
+  const P = matches.length;
+  const Pts = V * 3 + E;
+  const SG = GP - GC;
+  const winPct = P > 0 ? Math.round((Pts / (P * 3)) * 100) : 0;
+
+  /* Jogadores do time com stats (do roster + de quem aparece nos eventos) */
+  const playerNames = new Set(state.teamRosters?.[teamId] || []);
+  for (const m of matches) {
+    for (const ev of (m.events || [])) {
+      if (ev.teamId === teamId && ev.playerName) playerNames.add(ev.playerName);
+    }
+    if (m.ratings && m.ratings[teamId]) {
+      for (const p of Object.keys(m.ratings[teamId])) playerNames.add(p);
+    }
+  }
+
+  const playerStats = computePlayerStats(state).filter((p) => p.teamId === teamId);
+  /* Garante que jogadores do roster sem stats também apareçam */
+  const stMap = {};
+  for (const ps of playerStats) stMap[ps.playerName] = ps;
+  const allPlayers = Array.from(playerNames).map((pname) => {
+    const ps = stMap[pname];
+    return ps || {
+      teamId, teamName: team.name, teamFlag: team.flag, owner: team.owner,
+      playerName: pname, goals: 0, assists: 0, yellows: 0, reds: 0,
+      ratingSum: 0, ratingCount: 0,
+    };
+  });
+
+  return { team, matches, P, V, E, D, GP, GC, SG, Pts, winPct, players: allPlayers };
+}
+
+/* ============================================================
+   RANKINGS DE EQUIPES — melhor ataque/defesa/cartões
+   ============================================================ */
+export function computeTeamRankings(state) {
+  const teamStats = computeTeamStats(state).filter((t) => t.P > 0);
+
+  /* Computa cartões por time agregando os eventos */
+  const cardsByTeam = {};
+  for (const m of state.matches) {
+    if (!m.played || m.autoPlayed) continue;
+    for (const ev of (m.events || [])) {
+      if (ev.type !== 'yellow' && ev.type !== 'red') continue;
+      if (!cardsByTeam[ev.teamId]) cardsByTeam[ev.teamId] = { yellows: 0, reds: 0 };
+      if (ev.type === 'yellow') cardsByTeam[ev.teamId].yellows++;
+      else cardsByTeam[ev.teamId].reds++;
+    }
+  }
+
+  const enriched = teamStats.map((t) => {
+    const c = cardsByTeam[t.teamId] || { yellows: 0, reds: 0 };
+    return { ...t, yellows: c.yellows, reds: c.reds, totalCards: c.yellows + c.reds * 2 };
+  });
+
+  return {
+    bestAttack:   [...enriched].sort((a, b) => (b.GP / b.P) - (a.GP / a.P) || b.GP - a.GP),
+    bestDefense:  [...enriched].sort((a, b) => (a.GC / a.P) - (b.GC / b.P) || a.GC - b.GC),
+    mostCards:    [...enriched].filter((t) => t.totalCards > 0).sort((a, b) => b.totalCards - a.totalCards),
+    cleanestTeams: [...enriched].sort((a, b) => a.totalCards - b.totalCards || b.P - a.P),
+  };
+}
+
+/* ============================================================
+   RODADAS DISPONÍVEIS DO TORNEIO
+   Retorna lista de "etapas" pra navegação (Grupos R1/R2/R3 + mata-mata)
+   ============================================================ */
+export function getAllRoundKeys(state) {
+  const format = getFormat(state.formatId);
+  const rounds = [];
+  if (format.hasGroups) {
+    /* Cada rodada de grupo é uma "rodada" */
+    const groupRounds = new Set();
+    for (const m of state.matches) {
+      if (m.stage === 'group' && m.round) groupRounds.add(m.round);
+    }
+    const sorted = [...groupRounds].sort((a, b) => a - b);
+    for (const r of sorted) {
+      rounds.push({ key: `group_r${r}`, label: `Grupos · R${r}`, stage: 'group', round: r });
+    }
+  }
+  for (const ks of (format.knockoutStages || [])) {
+    rounds.push({ key: ks, label: STAGE_LABELS[ks] || ks, stage: ks });
+  }
+  return rounds;
+}
+
+/* Filtra matches que pertencem a uma rodada específica */
+function matchesInRound(state, roundKey) {
+  if (roundKey.startsWith('group_r')) {
+    const r = parseInt(roundKey.replace('group_r', ''), 10);
+    return state.matches.filter((m) => m.stage === 'group' && m.round === r && m.played && !m.autoPlayed);
+  }
+  return state.matches.filter((m) => m.stage === roundKey && !m.isExtra && m.played && !m.autoPlayed);
+}
+
+/* Time da rodada (4-3-3) baseado em jogadores que jogaram naquela rodada */
+export function computeBestXIForRound(state, roundKey) {
+  const matches = matchesInRound(state, roundKey);
+  if (matches.length === 0) {
+    return { GOL: [], ZAG: [], LAT: [], MEI: [], ATA: [], available: {} };
+  }
+  /* Pega stats apenas dos eventos+ratings desses matches */
+  const playerMap = {}; // 'teamId|playerName' → stats
+  for (const m of matches) {
+    /* Eventos */
+    for (const ev of (m.events || [])) {
+      if (!ev.playerName || !ev.teamId) continue;
+      const k = `${ev.teamId}|${ev.playerName}`;
+      if (!playerMap[k]) playerMap[k] = { teamId: ev.teamId, playerName: ev.playerName, goals: 0, assists: 0, yellows: 0, reds: 0, ratingSum: 0, ratingCount: 0 };
+      if (ev.type === 'goal') playerMap[k].goals++;
+      else if (ev.type === 'assist') playerMap[k].assists++;
+      else if (ev.type === 'yellow') playerMap[k].yellows++;
+      else if (ev.type === 'red') playerMap[k].reds++;
+    }
+    /* Ratings */
+    for (const teamId of Object.keys(m.ratings || {})) {
+      for (const [pname, val] of Object.entries(m.ratings[teamId] || {})) {
+        const r = parseFloat(val);
+        if (isNaN(r)) continue;
+        const k = `${teamId}|${pname}`;
+        if (!playerMap[k]) playerMap[k] = { teamId, playerName: pname, goals: 0, assists: 0, yellows: 0, reds: 0, ratingSum: 0, ratingCount: 0 };
+        playerMap[k].ratingSum += r;
+        playerMap[k].ratingCount++;
+      }
+    }
+  }
+  /* Anexa metadados de time + posição + score adaptado */
+  const all = Object.values(playerMap).map((p) => {
+    const team = getTeamById(state, p.teamId);
+    const position = getPlayerPosition(state, p.teamId, p.playerName);
+    const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+    const owner = team?.owner;
+    const teamName = team?.name;
+    const teamFlag = team?.flag;
+    let posScore = null;
+    if (position) {
+      const cardPenalty = p.yellows + p.reds * 4;
+      const matchesBonus = Math.log2(p.ratingCount + 1) * 1.5;
+      let core;
+      switch (position) {
+        case 'GOL': core = avg * 12 + p.assists * 1.5; break;
+        case 'ZAG': core = avg * 9 + p.goals * 3 + p.assists * 1.5; break;
+        case 'LAT': core = avg * 8 + p.goals * 3.5 + p.assists * 2.5; break;
+        case 'MEI': core = avg * 7 + p.goals * 3.5 + p.assists * 3.5; break;
+        case 'ATA': core = avg * 6 + p.goals * 5 + p.assists * 2; break;
+        default: core = avg * 6 + p.goals * 4 + p.assists * 2;
+      }
+      posScore = core + matchesBonus - cardPenalty;
+    }
+    return { ...p, position, avg, teamName, teamFlag, owner, posScore, isChampionTeam: false };
+  });
+
+  const byPos = {};
+  for (const pid of ['GOL', 'ZAG', 'LAT', 'MEI', 'ATA']) {
+    byPos[pid] = all
+      .filter((p) => p.position === pid && p.posScore != null)
+      .sort((a, b) => b.posScore - a.posScore);
+  }
+  return {
+    GOL: byPos.GOL.slice(0, 1),
+    ZAG: byPos.ZAG.slice(0, 2),
+    LAT: byPos.LAT.slice(0, 2),
+    MEI: byPos.MEI.slice(0, 3),
+    ATA: byPos.ATA.slice(0, 3),
+    available: byPos,
+  };
+}
+
+/* ============================================================
+   RESHUFFLE MATA-MATA: troca times de confrontos com mesmo dono
+   ============================================================ */
+export function reshuffleSameOwnerKnockout(state) {
+  const format = getFormat(state.formatId);
+  if (!format.knockoutStages || format.knockoutStages.length === 0) return state.matches;
+  const firstStage = format.knockoutStages[0];
+
+  /* Pega TODOS os matches do mata-mata pra também atualizar a 2ª "perna" se houver */
+  const allKoMatches = state.matches.filter((m) => m.stage !== 'group');
+
+  /* Agrupa confrontos do PRIMEIRO stage (por koIndex) e identifica mesmo dono */
+  const firstStageMatches = allKoMatches.filter((m) => m.stage === firstStage && !m.isExtra);
+  const byKoIndex = {};
+  for (const m of firstStageMatches) {
+    const k = m.koIndex;
+    if (!byKoIndex[k]) byKoIndex[k] = [];
+    byKoIndex[k].push(m);
+  }
+  /* Pra cada koIndex (que é um confronto), identifica home/away owner */
+  const confronts = Object.entries(byKoIndex).map(([koIdx, legs]) => {
+    const sample = legs[0];
+    const homeTeam = getTeamById(state, sample.homeTeamId);
+    const awayTeam = getTeamById(state, sample.awayTeamId);
+    const allLegsPending = legs.every((l) => !l.played);
+    return {
+      koIndex: Number(koIdx),
+      homeTeamId: sample.homeTeamId,
+      awayTeamId: sample.awayTeamId,
+      homeOwner: homeTeam?.owner,
+      awayOwner: awayTeam?.owner,
+      sameOwner: homeTeam?.owner && awayTeam?.owner && homeTeam.owner === awayTeam.owner,
+      ownerKey: homeTeam?.owner === awayTeam?.owner ? homeTeam?.owner : null,
+      canSwap: allLegsPending,
+    };
+  });
+
+  /* Agrupa same-owner por dono */
+  const sameP1 = confronts.filter((c) => c.sameOwner && c.ownerKey === 'p1' && c.canSwap);
+  const sameP2 = confronts.filter((c) => c.sameOwner && c.ownerKey === 'p2' && c.canSwap);
+
+  /* Embaralha */
+  const p1Sh = [...sameP1].sort(() => Math.random() - 0.5);
+  const p2Sh = [...sameP2].sort(() => Math.random() - 0.5);
+
+  const swapPairs = Math.min(p1Sh.length, p2Sh.length);
+  if (swapPairs === 0) return { matches: state.matches, swappedPairs: 0 };
+
+  /* Pra cada par (P1-P1) ↔ (P2-P2):
+     Confronto 1: home=A1(P1), away=A2(P1)
+     Confronto 2: home=B1(P2), away=B2(P2)
+     Resultado:
+     Confronto 1: home=A1(P1), away=B1(P2)
+     Confronto 2: home=A2(P1), away=B2(P2)
+     Movemos A2 para Confronto 2 (como home_v2) e B1 para Confronto 1 (como away_v1). */
+  const swapMap = {}; // koIndex → { newHomeId, newAwayId }
+  for (let i = 0; i < swapPairs; i++) {
+    const c1 = p1Sh[i]; // P1 vs P1
+    const c2 = p2Sh[i]; // P2 vs P2
+    swapMap[c1.koIndex] = { newHomeId: c1.homeTeamId, newAwayId: c2.homeTeamId };
+    swapMap[c2.koIndex] = { newHomeId: c1.awayTeamId, newAwayId: c2.awayTeamId };
+  }
+
+  const newMatches = state.matches.map((m) => {
+    if (m.stage !== firstStage || m.isExtra) return m;
+    if (m.played) return m;
+    const swap = swapMap[m.koIndex];
+    if (!swap) return m;
+    return { ...m, homeTeamId: swap.newHomeId, awayTeamId: swap.newAwayId };
+  });
+  /* Propaga os vencedores nos stages seguintes (limpa, já que a base mudou) */
+  const propagated = propagateKnockoutWinners(newMatches);
+  return { matches: propagated, swappedPairs };
+}
+
+/* ============================================================
    STATUS DO TORNEIO
    ============================================================ */
 export function isTournamentFinished(state) {
