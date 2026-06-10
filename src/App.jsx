@@ -25,6 +25,7 @@ import {
   computePlayersByPosition, computeBestXI,
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
+  computeGroupTeamsOverview,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
   reshuffleSameOwnerKnockout,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
@@ -1195,6 +1196,7 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTea
               bestThirdsCount={format.bestThirds}
               openTeam={openTeam}
             />
+            <GroupTeamsNeedsPanel state={state} groupLetter={g.letter} openMatch={openMatch} />
           </Card>
         ))}
       </div>
@@ -1251,6 +1253,177 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTea
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+/* === Painel "O que cada time precisa" pra um grupo (mostrado na aba Grupos) === */
+function GroupTeamsNeedsPanel({ state, groupLetter, openMatch }) {
+  const overview = useMemo(() => computeGroupTeamsOverview(state, groupLetter), [state, groupLetter]);
+  if (overview.length === 0) return null;
+
+  /* Não exibe se todos os times já jogaram tudo (sem informação útil) */
+  const someHasPending = overview.some((o) => o.nextMatch);
+  if (!someHasPending) return null;
+
+  const styleByType = {
+    guaranteed:     { bg: 'bg-emerald-950/40 border-emerald-700/40', text: 'text-emerald-300', dot: 'bg-emerald-400' },
+    impossible:     { bg: 'bg-red-950/40 border-red-700/40',         text: 'text-red-300',     dot: 'bg-red-400' },
+    needs_min:      { bg: 'bg-amber-950/40 border-amber-700/40',     text: 'text-amber-300',   dot: 'bg-amber-400' },
+    needs_help:     { bg: 'bg-orange-950/40 border-orange-700/40',   text: 'text-orange-300',  dot: 'bg-orange-400' },
+    third_chase:    { bg: 'bg-yellow-950/40 border-yellow-700/40',   text: 'text-yellow-200',  dot: 'bg-yellow-400' },
+    third_only:     { bg: 'bg-yellow-950/40 border-yellow-700/40',   text: 'text-yellow-200',  dot: 'bg-yellow-400' },
+    third_in:       { bg: 'bg-emerald-950/30 border-emerald-700/30', text: 'text-emerald-200', dot: 'bg-emerald-400' },
+    third_out:      { bg: 'bg-yellow-950/30 border-yellow-700/30',   text: 'text-yellow-300',  dot: 'bg-yellow-400' },
+    third_done:     { bg: 'bg-yellow-950/30 border-yellow-700/30',   text: 'text-yellow-300',  dot: 'bg-yellow-400' },
+    depends_others: { bg: 'bg-slate-900/60 border-slate-700',        text: 'text-slate-300',   dot: 'bg-slate-400' },
+    unknown:        { bg: 'bg-slate-900/60 border-slate-700',        text: 'text-slate-400',   dot: 'bg-slate-500' },
+  };
+
+  return (
+    <div className="mt-4 pt-3 border-t border-slate-800/60">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">O que cada time precisa</div>
+      <div className="space-y-1.5">
+        {overview.map(({ team, nextMatch, opponent, need }) => {
+          const sty = styleByType[need?.type] || styleByType.unknown;
+          const label = need?.label || 'Análise indisponível';
+          return (
+            <div key={team.id} className={cls('p-2 rounded border text-xs', sty.bg)}>
+              <div className="flex items-center gap-1.5 mb-1 truncate">
+                <span className="text-sm">{team.flag}</span>
+                <span className="font-bold truncate">{team.name}</span>
+              </div>
+              <div className={cls('flex items-center gap-1.5 text-[11px] font-bold uppercase leading-tight', sty.text)}>
+                <span className={cls('w-1.5 h-1.5 rounded-full flex-shrink-0', sty.dot)} />
+                <span>{label}</span>
+              </div>
+              {nextMatch && opponent && (
+                <button onClick={() => openMatch?.(nextMatch.id)} className="text-[10px] text-slate-400 mt-0.5 hover:text-slate-200 transition truncate block">
+                  Próximo: vs {opponent.flag} {opponent.name}
+                </button>
+              )}
+              {need?.detail && (
+                <div className="text-[10px] text-slate-500 mt-0.5 italic">{need.detail}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* === Painel de "Ficar de olho" + "Suspensos" dentro do MatchDetailView === */
+function MatchExtrasPanel({ state, match }) {
+  const homeNotables = useMemo(() => getNotablePlayersForTeam(state, match.homeTeamId, 3), [state.matches, match.homeTeamId]);
+  const awayNotables = useMemo(() => getNotablePlayersForTeam(state, match.awayTeamId, 3), [state.matches, match.awayTeamId]);
+
+  const stageKey = matchStageKey(match);
+
+  const homeSuspended = useMemo(() => {
+    const roster = state.teamRosters?.[match.homeTeamId] || [];
+    return roster
+      .map((name) => ({ name, status: getPlayerCardStatus(state, match.homeTeamId, name, stageKey) }))
+      .filter((p) => p.status?.suspended);
+  }, [state, match.homeTeamId, stageKey]);
+
+  const awaySuspended = useMemo(() => {
+    const roster = state.teamRosters?.[match.awayTeamId] || [];
+    return roster
+      .map((name) => ({ name, status: getPlayerCardStatus(state, match.awayTeamId, name, stageKey) }))
+      .filter((p) => p.status?.suspended);
+  }, [state, match.awayTeamId, stageKey]);
+
+  const home = getTeamById(state, match.homeTeamId);
+  const away = getTeamById(state, match.awayTeamId);
+
+  const hasNotables = homeNotables.length > 0 || awayNotables.length > 0;
+  const hasSuspended = homeSuspended.length > 0 || awaySuspended.length > 0;
+  if (!hasNotables && !hasSuspended) return null;
+
+  return (
+    <Card className="p-4">
+      <h3 className="text-xs uppercase tracking-wider text-slate-400 font-bold mb-3 flex items-center gap-2">
+        <Star className="w-3.5 h-3.5 text-amber-400" /> Antes do jogo
+      </h3>
+      <div className="grid grid-cols-2 gap-4">
+        {/* Coluna do home */}
+        <div className="space-y-3">
+          <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500 truncate">{home?.flag} {home?.name}</div>
+          {homeNotables.length > 0 && (
+            <SidePanel
+              title="Ficar de olho"
+              titleColor="text-amber-300"
+              items={homeNotables.map((p) => ({
+                name: p.playerName,
+                extras: (
+                  <>
+                    {p.goals > 0 && <span className="text-emerald-400">⚽{p.goals} </span>}
+                    {p.assists > 0 && <span className="text-sky-400">🤝{p.assists} </span>}
+                    {p.avg > 0 && <span className="text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
+                  </>
+                ),
+              }))}
+            />
+          )}
+          {homeSuspended.length > 0 && (
+            <SidePanel
+              title="Suspensos"
+              titleColor="text-red-400"
+              items={homeSuspended.map((p) => ({ name: p.name, extras: <span className="text-red-300">{p.status.reason}</span> }))}
+            />
+          )}
+          {homeNotables.length === 0 && homeSuspended.length === 0 && (
+            <div className="text-[10px] italic text-slate-600">Sem destaques ou suspensos.</div>
+          )}
+        </div>
+        {/* Coluna do away */}
+        <div className="space-y-3">
+          <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500 truncate">{away?.flag} {away?.name}</div>
+          {awayNotables.length > 0 && (
+            <SidePanel
+              title="Ficar de olho"
+              titleColor="text-amber-300"
+              items={awayNotables.map((p) => ({
+                name: p.playerName,
+                extras: (
+                  <>
+                    {p.goals > 0 && <span className="text-emerald-400">⚽{p.goals} </span>}
+                    {p.assists > 0 && <span className="text-sky-400">🤝{p.assists} </span>}
+                    {p.avg > 0 && <span className="text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
+                  </>
+                ),
+              }))}
+            />
+          )}
+          {awaySuspended.length > 0 && (
+            <SidePanel
+              title="Suspensos"
+              titleColor="text-red-400"
+              items={awaySuspended.map((p) => ({ name: p.name, extras: <span className="text-red-300">{p.status.reason}</span> }))}
+            />
+          )}
+          {awayNotables.length === 0 && awaySuspended.length === 0 && (
+            <div className="text-[10px] italic text-slate-600">Sem destaques ou suspensos.</div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function SidePanel({ title, titleColor, items }) {
+  return (
+    <div>
+      <div className={cls('text-[10px] uppercase tracking-wider font-bold mb-1 flex items-center gap-1', titleColor)}>{title}</div>
+      <div className="space-y-0.5">
+        {items.map((it, i) => (
+          <div key={i} className="text-[11px] flex items-baseline justify-between gap-2">
+            <span className="font-bold truncate">{it.name}</span>
+            <span className="text-[10px] flex-shrink-0">{it.extras}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1333,8 +1506,6 @@ function UpcomingMatchRow({ state, match, openMatch }) {
   const away = getTeamById(state, match.awayTeamId);
   const homeColor = getOwnerColor(state, home?.owner);
   const awayColor = getOwnerColor(state, away?.owner);
-  const homeNotables = useMemo(() => getNotablePlayersForTeam(state, match.homeTeamId, 2), [state.matches, match.homeTeamId]);
-  const awayNotables = useMemo(() => getNotablePlayersForTeam(state, match.awayTeamId, 2), [state.matches, match.awayTeamId]);
   const stageLbl = match.stage === 'group' ? `Grupo ${match.group} · R${match.round}` : (STAGE_LABELS[match.stage] || match.stage);
 
   return (
@@ -1361,40 +1532,11 @@ function UpcomingMatchRow({ state, match, openMatch }) {
           </div>
         </div>
       </div>
-      {(homeNotables.length > 0 || awayNotables.length > 0) && (
-        <div className="mt-2 pt-2 border-t border-slate-800/60 grid grid-cols-2 gap-2">
-          <NotablePlayers players={homeNotables} side="left" />
-          <NotablePlayers players={awayNotables} side="right" />
-        </div>
-      )}
     </button>
   );
 }
 
-function NotablePlayers({ players, side }) {
-  if (players.length === 0) {
-    return <div className="text-[10px] italic text-slate-600 px-1">Sem histórico ainda</div>;
-  }
-  return (
-    <div className={cls('text-[10px]', side === 'right' && 'text-right')}>
-      <div className="uppercase tracking-wider text-slate-500 font-bold mb-0.5 flex items-center gap-1" style={{ justifyContent: side === 'right' ? 'flex-end' : 'flex-start' }}>
-        <Star className="w-2.5 h-2.5 text-amber-400" /> Ficar de olho
-      </div>
-      <div className="space-y-0.5">
-        {players.map((p) => (
-          <div key={p.playerName} className="text-slate-300 truncate">
-            <span className="font-bold">{p.playerName}</span>
-            <span className="text-slate-500 ml-1">
-              {p.goals > 0 && `⚽${p.goals} `}
-              {p.assists > 0 && `🤝${p.assists} `}
-              {p.avg > 0 && `⭐${p.avg.toFixed(1)}`}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+function NotablePlayers() { return null; /* obsoleto, mantido pra compat */ }
 
 function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0, openTeam }) {
   return (
@@ -1742,6 +1884,8 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
 
       {!isKo && !match.played && <GroupScenariosCard state={state} matchId={matchId} />}
 
+      <MatchExtrasPanel state={state} match={match} />
+
       {isKo && <KnockoutMatchExtras state={state} match={match} home={home} away={away} update={update} updateMatches={updateMatches} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1915,6 +2059,8 @@ function GroupScenariosCard({ state, matchId }) {
     impossible:     { bg: 'bg-red-950/50 border-red-700/40',         text: 'text-red-300',     dot: 'bg-red-400' },
     needs_min:      { bg: 'bg-amber-950/50 border-amber-700/40',     text: 'text-amber-300',   dot: 'bg-amber-400' },
     needs_help:     { bg: 'bg-orange-950/50 border-orange-700/40',   text: 'text-orange-300',  dot: 'bg-orange-400' },
+    third_chase:    { bg: 'bg-yellow-950/50 border-yellow-700/40',   text: 'text-yellow-200',  dot: 'bg-yellow-400' },
+    third_only:     { bg: 'bg-yellow-950/50 border-yellow-700/40',   text: 'text-yellow-200',  dot: 'bg-yellow-400' },
     depends_others: { bg: 'bg-slate-900/60 border-slate-700',        text: 'text-slate-300',   dot: 'bg-slate-400' },
   };
 
@@ -1969,7 +2115,7 @@ function GroupScenariosCard({ state, matchId }) {
       </div>
 
       <div className="text-[10px] text-slate-600 italic mt-3 leading-relaxed">
-        Análise considera saldo de gols e melhores 3ºs lugares. Outros grupos com jogos pendentes podem alterar a posição entre 3ºs lugares.
+        Análise foca em classificação direta (top 2). Se o time não puder mais ficar no top 2, mostra o necessário pra disputar vaga de melhor 3º (sem garantia).
       </div>
     </Card>
   );
