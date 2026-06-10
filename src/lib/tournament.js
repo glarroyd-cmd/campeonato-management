@@ -1798,8 +1798,9 @@ export function computeGroupScenarios(state, matchId) {
 
 /* ============================================================
    MÍNIMO NECESSÁRIO PARA CLASSIFICAÇÃO
-   Pra cada time do grupo, calcula a margem mínima de resultado
-   necessária no jogo atual pra se classificar (top 2 + melhores 3ºs).
+   Foca em top 2 do grupo. Se o time não puder mais ficar em top 2,
+   verifica se pode chegar em 3º (com label deixando claro que é
+   apenas pra disputar vaga de melhor 3º, sem garantia).
    ============================================================ */
 export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
   const format = getFormat(state.formatId);
@@ -1818,26 +1819,15 @@ export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
   /* Limita combinatória: outros pendentes deste grupo ≤ 3 (3^3 = 27 cenários por margem) */
   if (otherPending.length > 3) return {};
 
-  const directQualified = 2;
   const bestThirdsCount = format.bestThirds || 0;
 
-  /* Verifica se um time se classifica num estado simulado */
-  const isClassified = (simulatedGroupMatches, teamId) => {
+  /* Retorna posição final do time num cenário simulado */
+  const teamPosition = (simulatedGroupMatches, teamId) => {
     const vs = { ...state, matches: [...otherMatches, ...simulatedGroupMatches] };
     const standing = computeGroupStanding(vs, groupLetter);
-    const pos = standing.findIndex((r) => r.id === teamId);
-    if (pos < directQualified) return true;
-    if (pos === 2 && bestThirdsCount > 0) {
-      const bt = computeBestThirds(vs);
-      const me = bt.find((t) => t.id === teamId);
-      return me?.qualified === true;
-    }
-    return false;
+    return standing.findIndex((r) => r.id === teamId);
   };
 
-  /* Aplica resultados a todos os pendentes do grupo, dada uma combinação
-     de outcomes (0=home_wins, 1=draw, 2=away_wins) pros otherPending +
-     placar fixo pro currentMatch */
   const buildSimulated = (currentHome, currentAway, otherOutcomes) => {
     return allGroupMatches.map((m) => {
       if (m.played) return m;
@@ -1854,32 +1844,40 @@ export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
     });
   };
 
-  /* Avalia uma margem (placar) específica pra um time:
-     retorna { allClassified, someClassified } sobre todos os outros pendentes */
+  /* Avalia placar: retorna flags { allTop2, someTop2, someTop3 } sobre todos
+     os cenários dos outros pendentes do grupo. top3 = posição ≤ 2 (0-indexed). */
   const evalScore = (teamId, currentHome, currentAway) => {
-    let allClassified = true;
-    let someClassified = false;
+    let allTop2 = true, someTop2 = false, someTop3 = false;
     const numOther = Math.pow(3, otherPending.length);
     for (let i = 0; i < numOther; i++) {
       let n = i;
       const outcomes = otherPending.map(() => { const r = n % 3; n = Math.floor(n / 3); return r; });
       const simulated = buildSimulated(currentHome, currentAway, outcomes);
-      const c = isClassified(simulated, teamId);
-      if (c) someClassified = true; else allClassified = false;
-      if (!allClassified && someClassified) break;
+      const pos = teamPosition(simulated, teamId);
+      if (pos < 2) { someTop2 = true; }
+      else { allTop2 = false; }
+      if (pos <= 2) someTop3 = true;
     }
-    return { allClassified, someClassified };
+    return { allTop2, someTop2, someTop3 };
+  };
+
+  const labelForMargin = (m) => {
+    if (m >= 4) return 'Vitória por 4+ gols';
+    if (m >= 1) return m === 1 ? 'Vitória por 1 gol' : `Vitória por ${m} gols`;
+    if (m === 0) return 'Empate';
+    if (m === -1) return 'Pode perder por 1 gol';
+    return `Pode perder por até ${Math.abs(m)} gols`;
   };
 
   const determineNeeds = (teamId) => {
     const isHome = teamId === currentMatch.homeTeamId;
     const isAway = teamId === currentMatch.awayTeamId;
 
-    /* === Caso 1: Time NÃO joga o jogo atual === */
+    /* === Time NÃO joga o match atual === */
     if (!isHome && !isAway) {
       const allPending = [currentMatch, ...otherPending];
       if (allPending.length > 4) return { type: 'unknown', label: 'Análise indisponível' };
-      let allClass = true, someClass = false;
+      let allTop2 = true, someTop2 = false, someTop3 = false;
       const numTotal = Math.pow(3, allPending.length);
       for (let i = 0; i < numTotal; i++) {
         let n = i;
@@ -1894,21 +1892,21 @@ export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
           else { hs = 1; as = 2; }
           return { ...m, played: true, homeScore: hs, awayScore: as };
         });
-        const c = isClassified(simulated, teamId);
-        if (c) someClass = true; else allClass = false;
-        if (!allClass && someClass) break;
+        const pos = teamPosition(simulated, teamId);
+        if (pos < 2) someTop2 = true; else allTop2 = false;
+        if (pos <= 2) someTop3 = true;
       }
-      if (allClass) return { type: 'guaranteed', label: 'Já classificado' };
-      if (!someClass) return { type: 'impossible', label: 'Já eliminado' };
-      return { type: 'depends_others', label: 'Depende dos outros jogos do grupo' };
+      if (allTop2) return { type: 'guaranteed', label: 'Já classificado' };
+      if (someTop2) return { type: 'depends_others', label: 'Depende dos outros jogos do grupo' };
+      if (someTop3 && bestThirdsCount > 0) return { type: 'third_only', label: 'Só pode disputar vaga de 3º' };
+      return { type: 'impossible', label: 'Já eliminado' };
     }
 
-    /* === Caso 2: Time JOGA o jogo atual — testa cada margem === */
-    /* Constrói lista de placares representativos por margem (do ponto de vista do time) */
+    /* === Time JOGA o match atual: avalia cada margem === */
     const buildScore = (margin) => {
-      if (margin > 0) return isHome ? [margin, 0] : [0, margin];     // vitória por |margin|
-      if (margin < 0) return isHome ? [0, -margin] : [-margin, 0];   // derrota por |margin|
-      return [1, 1]; // empate
+      if (margin > 0) return isHome ? [margin, 0] : [0, margin];
+      if (margin < 0) return isHome ? [0, -margin] : [-margin, 0];
+      return [1, 1];
     };
 
     const margins = [4, 3, 2, 1, 0, -1, -2, -3, -4];
@@ -1917,51 +1915,117 @@ export function computeGroupMinimumNeeds(state, groupLetter, currentMatchId) {
       return { margin, hs, as, ...evalScore(teamId, hs, as) };
     });
 
-    /* Casos extremos */
-    if (evaluated.every((e) => e.allClassified)) {
+    /* Caso 1: já classificado em qualquer cenário */
+    if (evaluated.every((e) => e.allTop2)) {
       return { type: 'guaranteed', label: 'Já classificado' };
     }
-    if (evaluated.every((e) => !e.someClassified)) {
-      return { type: 'impossible', label: 'Já eliminado' };
-    }
 
-    /* worstAcceptable = a MAIS DESFAVORÁVEL margem que ainda garante classificação */
+    /* Caso 2: existe margem que GARANTE top 2 */
     const worstAcceptable = [...evaluated]
-      .filter((e) => e.allClassified)
-      .sort((a, b) => a.margin - b.margin)[0]; // menor margem (mais negativa)
+      .filter((e) => e.allTop2)
+      .sort((a, b) => a.margin - b.margin)[0];
 
     if (worstAcceptable) {
       const m = worstAcceptable.margin;
-      let label;
-      if (m >= 4) label = 'Vitória por 4+ gols';
-      else if (m >= 1) label = m === 1 ? 'Vitória por 1 gol' : `Vitória por ${m} gols`;
-      else if (m === 0) label = 'Empate basta';
-      else if (m === -1) label = 'Pode perder por 1 gol';
-      else label = `Pode perder por até ${Math.abs(m)} gols`;
+      const baseLabel = labelForMargin(m);
+      const label = m === 0 ? 'Empate basta' : baseLabel;
       return { type: 'needs_min', label, margin: m };
     }
 
-    /* Não há margem com garantia → vencer + torcer */
-    const minWinForChance = [...evaluated]
-      .filter((e) => e.someClassified && e.margin > 0)
-      .sort((a, b) => a.margin - b.margin)[0];
-
-    if (minWinForChance) {
-      const m = minWinForChance.margin;
-      const label = m >= 4 ? 'Vencer por 4+ gols + ajuda' :
-                    m === 1 ? 'Vencer + ajuda' :
-                    `Vencer por ${m}+ gols + ajuda`;
-      return { type: 'needs_help', label, margin: m };
+    /* Caso 3: nenhuma margem garante, mas alguma ainda PERMITE top 2 (vence + ajuda) */
+    const anyTop2 = evaluated.some((e) => e.someTop2);
+    if (anyTop2) {
+      const minWinForChance = [...evaluated]
+        .filter((e) => e.someTop2 && e.margin > 0)
+        .sort((a, b) => a.margin - b.margin)[0];
+      if (minWinForChance) {
+        const m = minWinForChance.margin;
+        const label = m === 1 ? 'Vencer + ajuda' :
+                      m >= 4 ? 'Vencer por 4+ gols + ajuda' :
+                      `Vencer por ${m}+ gols + ajuda`;
+        return { type: 'needs_help', label, margin: m };
+      }
+      return { type: 'depends_others', label: 'Depende de combinação' };
     }
 
-    /* fallback */
-    return { type: 'depends_others', label: 'Depende de combinação' };
+    /* Caso 4: time já não pode mais pegar top 2 — verifica se pode pegar 3º.
+       Só ativa se houver vaga de melhores 3ºs no formato. */
+    if (bestThirdsCount > 0) {
+      const top3Margins = evaluated.filter((e) => e.someTop3);
+      if (top3Margins.length > 0) {
+        const worstForThird = [...top3Margins].sort((a, b) => a.margin - b.margin)[0];
+        const m = worstForThird.margin;
+        const base = labelForMargin(m);
+        const label = m === 0 ? `${base} pra disputar 3º` : `${base} pra disputar 3º`;
+        return {
+          type: 'third_chase',
+          label,
+          detail: 'Vaga de melhor 3º não é garantida',
+          margin: m,
+        };
+      }
+    }
+
+    return { type: 'impossible', label: 'Já eliminado' };
   };
 
   const result = {};
   for (const team of groupObj.teams) {
     result[team.id] = determineNeeds(team.id);
   }
+  return result;
+}
+
+/* ============================================================
+   VISÃO POR TIME DO GRUPO
+   Para cada time, encontra seu próximo jogo pendente e calcula
+   o que precisa nele (usando computeGroupMinimumNeeds).
+   ============================================================ */
+export function computeGroupTeamsOverview(state, groupLetter) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return [];
+
+  const groupObj = state.groups.find((g) => g.letter === groupLetter);
+  if (!groupObj) return [];
+
+  const bestThirdsCount = format.bestThirds || 0;
+
+  const result = [];
+  for (const team of groupObj.teams) {
+    const teamPending = state.matches
+      .filter((m) => m.stage === 'group' && m.group === groupLetter && !m.played &&
+                     (m.homeTeamId === team.id || m.awayTeamId === team.id))
+      .sort((a, b) => (a.round ?? 0) - (b.round ?? 0));
+
+    if (teamPending.length === 0) {
+      /* Time já jogou tudo — status fixo */
+      const standing = computeGroupStanding(state, groupLetter);
+      const pos = standing.findIndex((r) => r.id === team.id);
+      let need;
+      if (pos < 2) {
+        need = { type: 'guaranteed', label: `Classificado em ${pos === 0 ? '1º' : '2º'} lugar` };
+      } else if (pos === 2 && bestThirdsCount > 0) {
+        const bt = computeBestThirds(state);
+        const me = bt.find((t) => t.id === team.id);
+        if (me?.qualified) {
+          need = { type: 'third_in', label: 'Provisoriamente nos melhores 3ºs', detail: 'Depende dos demais grupos' };
+        } else {
+          need = { type: 'third_out', label: 'Fora dos melhores 3ºs', detail: 'Aguarda resultados dos outros grupos' };
+        }
+      } else {
+        need = { type: 'impossible', label: 'Eliminado' };
+      }
+      result.push({ team, nextMatch: null, opponent: null, need });
+      continue;
+    }
+
+    const nextMatch = teamPending[0];
+    const allNeeds = computeGroupMinimumNeeds(state, groupLetter, nextMatch.id);
+    const oppId = nextMatch.homeTeamId === team.id ? nextMatch.awayTeamId : nextMatch.homeTeamId;
+    const opponent = getTeamById(state, oppId);
+    result.push({ team, nextMatch, opponent, need: allNeeds[team.id] });
+  }
+
   return result;
 }
 
