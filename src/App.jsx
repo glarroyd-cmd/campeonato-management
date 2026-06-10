@@ -25,6 +25,8 @@ import {
   computePlayersByPosition, computeBestXI,
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
+  computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
+  reshuffleSameOwnerKnockout,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -160,6 +162,11 @@ export default function App() {
   const [loadError, setLoadError] = useState(null);
   const [view, setView] = useState('groups');
   const [activeMatchId, setActiveMatchId] = useState(null);
+  const [activeTeamId, setActiveTeamId] = useState(null);
+  const openTeam = useCallback((teamId, fromView) => {
+    setActiveTeamId(teamId);
+    setView('team');
+  }, []);
 
   /* Carrega torneio quando code muda */
   useEffect(() => {
@@ -276,20 +283,23 @@ export default function App() {
   const allTeams = getAllTeams(state);
 
   /* Garante que view esteja numa tab válida depois do wizard */
-  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats'];
+  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats', 'team'];
   const safeView = validTabs.includes(view) ? view : 'groups';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <Header state={state} view={safeView} setView={setView} code={code} onLeave={leave} />
       <main className="max-w-7xl mx-auto px-4 py-6 pb-24">
-        {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
+        {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} openTeam={openTeam} />}
         {safeView === 'matches'  && <MatchesView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
         {safeView === 'match' && activeMatchId && (
-          <MatchDetailView state={state} matchId={activeMatchId} updateMatches={updateMatches} update={update} allTeams={allTeams} onBack={() => setView('matches')} openMatch={(id) => setActiveMatchId(id)} />
+          <MatchDetailView state={state} matchId={activeMatchId} updateMatches={updateMatches} update={update} allTeams={allTeams} onBack={() => setView('matches')} openMatch={(id) => setActiveMatchId(id)} openTeam={openTeam} />
         )}
         {safeView === 'knockout' && <KnockoutView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
-        {safeView === 'stats'    && <StatsView state={state} allTeams={allTeams} />}
+        {safeView === 'stats'    && <StatsView state={state} allTeams={allTeams} openTeam={openTeam} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
+        {safeView === 'team' && activeTeamId && (
+          <TeamDetailView state={state} teamId={activeTeamId} onBack={() => setView('groups')} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />
+        )}
       </main>
     </div>
   );
@@ -1146,7 +1156,7 @@ function TeamsKoSetup({ state, update, format, code, onLeave, onFinish }) {
 /* ============================================================
    GROUPS VIEW — visualização da fase de grupos
    ============================================================ */
-function GroupsView({ state, update, updateMatches, allTeams, openMatch }) {
+function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTeam }) {
   const format = getFormat(state.formatId);
 
   const h2h = useMemo(() => computeHeadToHead(state), [state.matches]);
@@ -1183,6 +1193,7 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch }) {
               state={state}
               thirdsByTeamId={thirdsByTeamId}
               bestThirdsCount={format.bestThirds}
+              openTeam={openTeam}
             />
           </Card>
         ))}
@@ -1385,7 +1396,7 @@ function NotablePlayers({ players, side }) {
   );
 }
 
-function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0 }) {
+function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0, openTeam }) {
   return (
     <table className="w-full text-xs">
       <thead className="text-slate-500">
@@ -1397,17 +1408,13 @@ function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0 }
           <th className="font-medium pb-1 px-1">V</th>
           <th className="font-medium pb-1 px-1">E</th>
           <th className="font-medium pb-1 px-1">D</th>
+          <th className="font-medium pb-1 px-1">GP</th>
           <th className="font-medium pb-1 px-1">SG</th>
           <th className="font-medium pb-1 px-1">Pts</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((r, i) => {
-          /* Status:
-             - i < 2 → classificado direto (verde forte)
-             - i === 2 e qualified entre os melhores 3ºs → classificado (verde médio)
-             - i === 2 e não qualified → ainda em disputa (amarelo)
-             - i === 3 → eliminado */
           let rowCls = '';
           let indicator = null;
           if (i < 2) {
@@ -1424,14 +1431,21 @@ function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0 }
             }
           } else if (i === 2) {
             rowCls = 'text-amber-300';
-            indicator = null;
           }
           return (
             <tr key={r.id} className={cls('border-t border-slate-800', rowCls)}>
               <td className="py-1.5 tabular-nums">
                 <span className="inline-flex items-center">{i + 1}{indicator}</span>
               </td>
-              <td className="py-1.5"><span className="mr-1">{r.flag}</span>{r.name}</td>
+              <td className="py-1.5">
+                {openTeam ? (
+                  <button onClick={() => openTeam(r.id)} className="hover:text-lime-300 transition text-left">
+                    <span className="mr-1">{r.flag}</span>{r.name}
+                  </button>
+                ) : (
+                  <><span className="mr-1">{r.flag}</span>{r.name}</>
+                )}
+              </td>
               <td className="py-1.5 px-1">
                 <OwnerTag owner={r.owner} p1Name={state.player1Name} p2Name={state.player2Name}
                   p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
@@ -1440,6 +1454,7 @@ function StandingTable({ rows, state, thirdsByTeamId = {}, bestThirdsCount = 0 }
               <td className="text-center py-1.5 tabular-nums">{r.V}</td>
               <td className="text-center py-1.5 tabular-nums">{r.E}</td>
               <td className="text-center py-1.5 tabular-nums">{r.D}</td>
+              <td className="text-center py-1.5 tabular-nums">{r.GP}</td>
               <td className="text-center py-1.5 tabular-nums">{r.SG > 0 ? '+' : ''}{r.SG}</td>
               <td className="text-center py-1.5 tabular-nums font-bold">{r.Pts}</td>
             </tr>
@@ -2593,8 +2608,51 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
   const firstStageCount = groupByConfront(mainStages[0])?.length || 0;
   const minHeight = Math.max(420, firstStageCount * 86);
 
+  /* Calcula quantos confrontos têm mesmo dono (e que ainda podem ser sorteados) */
+  const sameOwnerConfronts = useMemo(() => {
+    const firstStage = mainStages[0];
+    if (!firstStage) return { total: 0, p1: 0, p2: 0, swappable: 0 };
+    let total = 0, p1 = 0, p2 = 0;
+    const confronts = groupByConfront(firstStage);
+    for (const legs of confronts) {
+      const sample = legs[0];
+      const home = getTeamById(state, sample.homeTeamId);
+      const away = getTeamById(state, sample.awayTeamId);
+      if (!home?.owner || !away?.owner) continue;
+      if (home.owner === away.owner && legs.every((l) => !l.played)) {
+        total++;
+        if (home.owner === 'p1') p1++; else if (home.owner === 'p2') p2++;
+      }
+    }
+    return { total, p1, p2, swappable: Math.min(p1, p2) };
+  }, [state.matches, mainStages, koMatches]);
+
+  const handleReshuffleSameOwner = useCallback(() => {
+    const result = reshuffleSameOwnerKnockout(state);
+    if (result.swappedPairs > 0) {
+      updateMatches(result.matches);
+    }
+  }, [state, updateMatches]);
+
   return (
     <div className="space-y-4">
+      {/* Botão de sortear same-owner — só aparece quando há pares pra trocar */}
+      {sameOwnerConfronts.swappable > 0 && !swapTeam && (
+        <div className="flex items-center justify-between gap-3 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg text-sm">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span className="text-amber-200">
+              {sameOwnerConfronts.total} confronto{sameOwnerConfronts.total > 1 ? 's' : ''} com mesmo dono.
+              Posso sortear {sameOwnerConfronts.swappable} {sameOwnerConfronts.swappable > 1 ? 'pares' : 'par'} pra evitar.
+            </span>
+          </div>
+          <button onClick={handleReshuffleSameOwner}
+            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-500 text-amber-950 hover:bg-amber-400 transition flex items-center gap-1">
+            <Shuffle className="w-3.5 h-3.5" /> Sortear adversários
+          </button>
+        </div>
+      )}
+
       {/* Banner modo swap */}
       {swapTeam ? (
         <div className="flex items-center justify-between gap-3 p-3 bg-blue-900/30 border border-blue-700/60 rounded-lg text-sm">
@@ -2813,7 +2871,7 @@ function KnockoutConfrontCard({ state, legs, openMatch, swapTeam, onTeamClick })
 /* ============================================================
    STATS VIEW
    ============================================================ */
-function StatsView({ state, allTeams }) {
+function StatsView({ state, allTeams, openTeam, openMatch }) {
   const playerStats   = useMemo(() => computePlayerStats(state), [state.matches]);
   const teamStats     = useMemo(() => computeTeamStats(state),   [state.matches]);
   const ownerStats    = useMemo(() => computeOwnerStats(state),  [state.matches]);
@@ -2822,11 +2880,10 @@ function StatsView({ state, allTeams }) {
   const records       = useMemo(() => computeTournamentRecords(state),   [state.matches]);
   const championPath  = useMemo(() => getChampionPath(state),            [state.matches]);
   const timeline      = useMemo(() => computeTimelineEvents(state),      [state.matches]);
-  const bestXI        = useMemo(() => computeBestXI(state),              [state.matches, state.playerPositions]);
   const byPosition    = useMemo(() => {
     const map = {};
     for (const p of POSITIONS) {
-      map[p.id] = computePlayersByPosition(state, p.id, 6);
+      map[p.id] = computePlayersByPosition(state, p.id, 999);
     }
     return map;
   }, [state.matches, state.playerPositions]);
@@ -2836,10 +2893,10 @@ function StatsView({ state, allTeams }) {
   const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
   const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
 
-  const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 10);
-  const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists).slice(0, 10);
-  const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg).slice(0, 10);
-  const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows)).slice(0, 10);
+  const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
+  const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
+  const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg);
+  const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows));
 
   const champion = getChampion(state);
   const noStatsYet = teamStats.every((t) => t.P === 0);
@@ -2904,9 +2961,10 @@ function StatsView({ state, allTeams }) {
         <section>
           <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
             <Trophy className="w-4 h-4" /> Power Ranking — Times
+            <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({powerTeams.length} times)</span>
           </h2>
           <Card className="p-3">
-            <PowerRankingTeamsList rows={powerTeams.slice(0, 12)} state={state} />
+            <PowerRankingTeamsList rows={powerTeams} state={state} openTeam={openTeam} />
           </Card>
         </section>
       )}
@@ -2916,15 +2974,16 @@ function StatsView({ state, allTeams }) {
         <section>
           <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
             <Star className="w-4 h-4" /> Power Ranking — Jogadores em campo
+            <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({powerPlayers.length} jogadores)</span>
           </h2>
           <Card className="p-3">
-            <PowerRankingPlayersList rows={powerPlayers.slice(0, 15)} state={state} />
+            <PowerRankingPlayersList rows={powerPlayers} state={state} openTeam={openTeam} />
           </Card>
         </section>
       )}
 
-      {/* Time do Torneio (4-3-3) */}
-      <BestXIField state={state} bestXI={bestXI} />
+      {/* Time do Torneio (4-3-3) com seletor por rodada */}
+      <BestXIByRoundSection state={state} />
 
       {/* Rankings por posição */}
       {POSITIONS.some((p) => byPosition[p.id].length > 0) && (
@@ -2939,6 +2998,9 @@ function StatsView({ state, allTeams }) {
           </div>
         </section>
       )}
+
+      {/* Estatísticas de equipes */}
+      <TeamRankingsSection state={state} openTeam={openTeam} />
 
       {/* Recordes */}
       {records && <RecordsCard state={state} records={records} />}
@@ -3017,90 +3079,100 @@ function ChampionPathCard({ state, championPath }) {
 }
 
 /* ========== Power Ranking — Times ========== */
-function PowerRankingTeamsList({ rows, state }) {
+function PowerRankingTeamsList({ rows, state, openTeam, maxHeight = '440px' }) {
   const stageName = { 0: '—', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
   return (
-    <div className="space-y-1">
-      {rows.map((t, i) => {
-        const ownerColor = getOwnerColor(state, t.owner);
-        return (
-          <div key={t.teamId}
-            className={cls('flex items-center gap-2 p-2 rounded transition',
-              t.isChampion && 'bg-amber-900/30 border border-amber-700/40',
-              i === 0 && !t.isChampion && 'bg-emerald-900/20',
-            )}
-            style={!t.isChampion && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
-          >
-            <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
-              i === 0 ? 'text-amber-400' :
-              i < 4 ? 'text-emerald-400' :
-              'text-slate-500'
-            )}>{i + 1}</span>
-            <span className="text-base">{t.flag}</span>
-            <div className="flex-1 truncate min-w-0">
-              <div className="font-bold truncate flex items-center gap-1.5">
-                {t.name}
-                {t.isChampion && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+    <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
+      <div className="space-y-1">
+        {rows.map((t, i) => {
+          const ownerColor = getOwnerColor(state, t.owner);
+          return (
+            <button
+              key={t.teamId}
+              onClick={() => openTeam?.(t.teamId)}
+              className={cls('w-full flex items-center gap-2 p-2 rounded transition text-left',
+                t.isChampion && 'bg-amber-900/30 border border-amber-700/40',
+                i === 0 && !t.isChampion && 'bg-emerald-900/20',
+                openTeam && 'hover:bg-slate-800/40',
+              )}
+              style={!t.isChampion && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
+            >
+              <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
+                i === 0 ? 'text-amber-400' :
+                i < 4 ? 'text-emerald-400' :
+                'text-slate-500'
+              )}>{i + 1}</span>
+              <span className="text-base">{t.flag}</span>
+              <div className="flex-1 truncate min-w-0">
+                <div className="font-bold truncate flex items-center gap-1.5">
+                  {t.name}
+                  {t.isChampion && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+                </div>
               </div>
-            </div>
-            <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name}
-              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-            <div className="text-[10px] text-slate-400 tabular-nums text-right hidden sm:block min-w-[80px]">
-              {t.P}j · {t.Pts}pt · {t.SG > 0 ? '+' : ''}{t.SG}
-            </div>
-            <div className="text-[10px] uppercase font-bold text-slate-500 min-w-[28px] text-center">
-              {stageName[t.stageReached] || '—'}
-            </div>
-            <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
-              {t.powerScore.toFixed(1)}
-            </div>
-          </div>
-        );
-      })}
+              <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+              <div className="text-[10px] text-slate-400 tabular-nums text-right hidden sm:block min-w-[80px]">
+                {t.P}j · {t.Pts}pt · {t.SG > 0 ? '+' : ''}{t.SG}
+              </div>
+              <div className="text-[10px] uppercase font-bold text-slate-500 min-w-[28px] text-center">
+                {stageName[t.stageReached] || '—'}
+              </div>
+              <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
+                {t.powerScore.toFixed(1)}
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 /* ========== Power Ranking — Jogadores ========== */
-function PowerRankingPlayersList({ rows, state }) {
+function PowerRankingPlayersList({ rows, state, openTeam, maxHeight = '440px' }) {
   return (
-    <div className="space-y-1">
-      {rows.map((p, i) => {
-        const ownerColor = getOwnerColor(state, p.owner);
-        return (
-          <div key={`${p.teamId}|${p.playerName}`}
-            className={cls('flex items-center gap-2 p-2 rounded transition',
-              p.isChampionTeam && 'bg-amber-900/20',
-              i === 0 && 'bg-emerald-900/20',
-            )}
-            style={!p.isChampionTeam && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
-          >
-            <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
-              i === 0 ? 'text-amber-400' :
-              i < 3 ? 'text-emerald-400' :
-              'text-slate-500'
-            )}>{i + 1}</span>
-            <span className="text-sm">{p.teamFlag}</span>
-            <div className="flex-1 truncate min-w-0">
-              <div className="font-bold truncate text-sm flex items-center gap-1.5">
-                {p.playerName}
-                {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400" />}
+    <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
+      <div className="space-y-1">
+        {rows.map((p, i) => {
+          const ownerColor = getOwnerColor(state, p.owner);
+          return (
+            <div key={`${p.teamId}|${p.playerName}`}
+              className={cls('flex items-center gap-2 p-2 rounded transition',
+                p.isChampionTeam && 'bg-amber-900/20',
+                i === 0 && 'bg-emerald-900/20',
+              )}
+              style={!p.isChampionTeam && i > 0 ? { background: `linear-gradient(90deg, ${ownerColor}10 0%, transparent 50%)` } : {}}
+            >
+              <span className={cls('text-sm font-bold tabular-nums w-6 text-center',
+                i === 0 ? 'text-amber-400' :
+                i < 3 ? 'text-emerald-400' :
+                'text-slate-500'
+              )}>{i + 1}</span>
+              <span className="text-sm">{p.teamFlag}</span>
+              <div className="flex-1 truncate min-w-0">
+                <div className="font-bold truncate text-sm flex items-center gap-1.5">
+                  {p.playerName}
+                  {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400" />}
+                </div>
+                <button
+                  onClick={() => openTeam?.(p.teamId)}
+                  className={cls('text-[10px] text-slate-500 truncate text-left', openTeam && 'hover:text-slate-300')}
+                >{p.teamName}</button>
               </div>
-              <div className="text-[10px] text-slate-500 truncate">{p.teamName}</div>
+              <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-2">
+                {p.goals > 0 && <span className="tabular-nums text-emerald-400">⚽{p.goals}</span>}
+                {p.assists > 0 && <span className="tabular-nums text-sky-400">🤝{p.assists}</span>}
+                {p.avg > 0 && <span className="tabular-nums text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
+                {p.yellows > 0 && <span className="tabular-nums text-yellow-500">🟨{p.yellows}</span>}
+                {p.reds > 0 && <span className="tabular-nums text-red-400">🟥{p.reds}</span>}
+              </div>
+              <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
+                {p.powerScore.toFixed(1)}
+              </div>
             </div>
-            <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-2">
-              {p.goals > 0 && <span className="tabular-nums text-emerald-400">⚽{p.goals}</span>}
-              {p.assists > 0 && <span className="tabular-nums text-sky-400">🤝{p.assists}</span>}
-              {p.avg > 0 && <span className="tabular-nums text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
-              {p.yellows > 0 && <span className="tabular-nums text-yellow-500">🟨{p.yellows}</span>}
-              {p.reds > 0 && <span className="tabular-nums text-red-400">🟥{p.reds}</span>}
-            </div>
-            <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
-              {p.powerScore.toFixed(1)}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -3261,14 +3333,16 @@ function KpiCell({ label, value, highlight }) {
 }
 
 /* ========== Time do Torneio (formação 4-3-3) ========== */
-function BestXIField({ state, bestXI }) {
+function BestXIField({ state, bestXI, hideTitle = false }) {
   const total = bestXI.GOL.length + bestXI.ZAG.length + bestXI.LAT.length + bestXI.MEI.length + bestXI.ATA.length;
   if (total === 0) {
     return (
       <section>
-        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-          <Users className="w-4 h-4" /> Time do torneio (4-3-3)
-        </h2>
+        {!hideTitle && (
+          <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+            <Users className="w-4 h-4" /> Time do torneio (4-3-3)
+          </h2>
+        )}
         <Card className="p-4 text-center text-xs text-slate-500 italic">
           Defina a posição dos jogadores (GOL / ZAG / LAT / MEI / ATA) nos jogos pra desbloquear o time do torneio.
         </Card>
@@ -3285,9 +3359,11 @@ function BestXIField({ state, bestXI }) {
 
   return (
     <section>
-      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-        <Users className="w-4 h-4" /> Time do torneio (4-3-3)
-      </h2>
+      {!hideTitle && (
+        <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" /> Time do torneio (4-3-3)
+        </h2>
+      )}
       <Card className="p-4 border-emerald-700/40" style={{ background: 'linear-gradient(180deg, rgb(6 78 59 / 0.35), rgb(2 44 34 / 0.5))' }}>
         {/* Campo de futebol */}
         <div className="relative mx-auto" style={{ maxWidth: '420px', aspectRatio: '2 / 3' }}>
@@ -3393,29 +3469,31 @@ function PositionRanking({ posDef, list, state }) {
       {list.length === 0 ? (
         <div className="text-xs text-slate-600 italic py-2">Nenhum jogador atribuído a essa posição ainda.</div>
       ) : (
-        <div className="space-y-1">
-          {list.map((p, i) => (
-            <div key={`${p.teamId}|${p.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
-              <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
-              <span className="text-sm">{p.teamFlag}</span>
-              <div className="flex-1 truncate min-w-0">
-                <div className="font-bold truncate text-sm flex items-center gap-1">
-                  {p.playerName}
-                  {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+        <div className="overflow-y-auto pr-1" style={{ maxHeight: '300px' }}>
+          <div className="space-y-1">
+            {list.map((p, i) => (
+              <div key={`${p.teamId}|${p.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
+                <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+                <span className="text-sm">{p.teamFlag}</span>
+                <div className="flex-1 truncate min-w-0">
+                  <div className="font-bold truncate text-sm flex items-center gap-1">
+                    {p.playerName}
+                    {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                  </div>
+                  <div className="text-[10px] text-slate-500 truncate">{p.teamName}</div>
                 </div>
-                <div className="text-[10px] text-slate-500 truncate">{p.teamName}</div>
+                <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                  p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[80px] justify-end">
+                  {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
+                  {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
+                </div>
+                <div className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right">
+                  {p.posScore.toFixed(1)}
+                </div>
               </div>
-              <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
-                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-              <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[80px] justify-end">
-                {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
-                {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
-              </div>
-              <div className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right">
-                {p.posScore.toFixed(1)}
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </Card>
@@ -3607,29 +3685,289 @@ function SurprisesCard({ state, list }) {
   );
 }
 
-function StatsList({ title, icon, list, render, state }) {
+/* ========== Página de detalhe do time ========== */
+function TeamDetailView({ state, teamId, onBack, openMatch }) {
+  const detail = useMemo(() => computeTeamDetail(state, teamId), [state, teamId]);
+  if (!detail) {
+    return (
+      <div className="space-y-4">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200">
+          <ChevronLeft className="w-4 h-4" /> Voltar
+        </button>
+        <Card className="p-6 text-center text-slate-500">Time não encontrado.</Card>
+      </div>
+    );
+  }
+  const { team, matches, P, V, E, D, GP, GC, SG, Pts, winPct, players } = detail;
+  const ownerColor = getOwnerColor(state, team.owner);
+  const ratedPlayers = [...players].sort((a, b) => {
+    /* Ordena por relevância: gols + assists + presença */
+    const score = (p) => p.goals * 3 + p.assists * 2 + p.ratingCount;
+    return score(b) - score(a);
+  });
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200">
+        <ChevronLeft className="w-4 h-4" /> Voltar
+      </button>
+
+      {/* Header do time */}
+      <Card className="p-4" style={{ background: `linear-gradient(135deg, ${ownerColor}22 0%, transparent 60%)`, borderColor: `${ownerColor}55` }}>
+        <div className="flex items-center gap-4">
+          <span className="text-5xl">{team.flag}</span>
+          <div>
+            <div className="text-3xl font-black">{team.name}</div>
+            <div className="mt-1">
+              <OwnerTag owner={team.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} />
+              {team.pot && <span className="ml-2 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">Pote {team.pot}</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* KPIs */}
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 mt-4">
+          <KpiCell label="Jogos" value={P} />
+          <KpiCell label="V" value={V} />
+          <KpiCell label="E" value={E} />
+          <KpiCell label="D" value={D} />
+          <KpiCell label="GP" value={GP} highlight={GP > 0} />
+          <KpiCell label="GC" value={GC} />
+          <KpiCell label="Saldo" value={(SG > 0 ? '+' : '') + SG} highlight={SG > 0} />
+          <KpiCell label="% Apr." value={`${winPct}%`} highlight={winPct >= 50} />
+        </div>
+      </Card>
+
+      {/* Jogadores do time */}
+      <Card className="p-3">
+        <h3 className="text-sm uppercase tracking-wider text-slate-400 font-bold mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" /> Jogadores
+          <span className="text-[10px] font-normal text-slate-500 normal-case tracking-normal">({ratedPlayers.length})</span>
+        </h3>
+        {ratedPlayers.length === 0 ? (
+          <div className="text-xs text-slate-500 italic">Nenhum jogador registrado ainda.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-slate-500">
+                <tr className="border-b border-slate-800">
+                  <th className="text-left pb-1.5 pr-2">Pos</th>
+                  <th className="text-left pb-1.5 pr-2">Jogador</th>
+                  <th className="text-center pb-1.5 px-1" title="Gols">⚽</th>
+                  <th className="text-center pb-1.5 px-1" title="Assistências">🤝</th>
+                  <th className="text-center pb-1.5 px-1" title="Amarelos">🟨</th>
+                  <th className="text-center pb-1.5 px-1" title="Vermelhos">🟥</th>
+                  <th className="text-center pb-1.5 px-1" title="Notas">⭐ Média</th>
+                  <th className="text-center pb-1.5 pl-1">Jogos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ratedPlayers.map((p) => {
+                  const pos = getPlayerPosition(state, teamId, p.playerName);
+                  const posDef = POSITIONS.find((pp) => pp.id === pos);
+                  const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+                  return (
+                    <tr key={p.playerName} className="border-b border-slate-800/50">
+                      <td className="py-1.5 pr-2">
+                        {posDef ? (
+                          <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded border"
+                            style={{ borderColor: posDef.color, color: posDef.color }}>{posDef.short}</span>
+                        ) : <span className="text-[10px] text-slate-600">—</span>}
+                      </td>
+                      <td className="py-1.5 pr-2 font-medium">{p.playerName}</td>
+                      <td className="text-center py-1.5 tabular-nums">{p.goals > 0 ? <span className="text-emerald-400 font-bold">{p.goals}</span> : <span className="text-slate-700">0</span>}</td>
+                      <td className="text-center py-1.5 tabular-nums">{p.assists > 0 ? <span className="text-sky-400 font-bold">{p.assists}</span> : <span className="text-slate-700">0</span>}</td>
+                      <td className="text-center py-1.5 tabular-nums">{p.yellows > 0 ? <span className="text-yellow-400 font-bold">{p.yellows}</span> : <span className="text-slate-700">0</span>}</td>
+                      <td className="text-center py-1.5 tabular-nums">{p.reds > 0 ? <span className="text-red-400 font-bold">{p.reds}</span> : <span className="text-slate-700">0</span>}</td>
+                      <td className="text-center py-1.5 tabular-nums">{avg > 0 ? <span className="font-bold">{avg.toFixed(2)}</span> : <span className="text-slate-700">—</span>}</td>
+                      <td className="text-center py-1.5 tabular-nums text-slate-500">{p.ratingCount}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Histórico de partidas */}
+      <Card className="p-3">
+        <h3 className="text-sm uppercase tracking-wider text-slate-400 font-bold mb-3 flex items-center gap-2">
+          <Calendar className="w-4 h-4" /> Histórico de partidas
+          <span className="text-[10px] font-normal text-slate-500 normal-case tracking-normal">({matches.length} jogos)</span>
+        </h3>
+        {matches.length === 0 ? (
+          <div className="text-xs text-slate-500 italic">Sem partidas registradas.</div>
+        ) : (
+          <div className="space-y-1.5">
+            {matches.map((m) => <TeamHistoryRow key={m.id} match={m} teamId={teamId} state={state} openMatch={openMatch} />)}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function TeamHistoryRow({ match, teamId, state, openMatch }) {
+  const isHome = match.homeTeamId === teamId;
+  const own = isHome ? match.homeScore : match.awayScore;
+  const opp = isHome ? match.awayScore : match.homeScore;
+  const oppTeam = getTeamById(state, isHome ? match.awayTeamId : match.homeTeamId);
+  if (!oppTeam) return null;
+  const result = own > opp ? 'V' : own < opp ? 'D' : 'E';
+  const resultColor = result === 'V' ? 'bg-emerald-700 text-emerald-50' : result === 'D' ? 'bg-red-700 text-red-50' : 'bg-slate-700 text-slate-300';
+  const stageLabel = match.stage === 'group' ? `Grupo ${match.group} · R${match.round}` : (STAGE_LABELS[match.stage] || match.stage);
+  return (
+    <button onClick={() => openMatch(match.id)} className="w-full grid grid-cols-[80px_30px_1fr_auto] items-center gap-2 p-2 rounded hover:bg-slate-800/40 transition text-left">
+      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold truncate">{stageLabel}</span>
+      <span className={cls('inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black', resultColor)}>{result}</span>
+      <div className="flex items-center gap-1.5 text-sm truncate">
+        <span className="text-slate-500 text-xs">{isHome ? 'vs' : 'em'}</span>
+        <span>{oppTeam.flag}</span>
+        <span className="truncate font-medium">{oppTeam.name}</span>
+      </div>
+      <span className="font-mono font-black tabular-nums text-sm">{own}–{opp}</span>
+    </button>
+  );
+}
+
+/* ========== Rankings de equipes (ataque/defesa/cartões) ========== */
+function TeamRankingsSection({ state, openTeam }) {
+  const rankings = useMemo(() => computeTeamRankings(state), [state.matches]);
+  if (rankings.bestAttack.length === 0) return null;
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Trophy className="w-4 h-4" /> Estatísticas de equipes
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <TeamRankList title="Melhor ataque" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={rankings.bestAttack.slice(0, 8)} state={state} openTeam={openTeam} render={(t) => <span className="tabular-nums font-bold">{t.GP} <span className="text-[10px] text-slate-500 font-normal">({(t.GP / t.P).toFixed(1)}/j)</span></span>} />
+        <TeamRankList title="Melhor defesa" icon={<span className="w-3 h-3 rounded-full bg-sky-400" />} list={rankings.bestDefense.slice(0, 8)} state={state} openTeam={openTeam} render={(t) => <span className="tabular-nums font-bold">{t.GC} <span className="text-[10px] text-slate-500 font-normal">({(t.GC / t.P).toFixed(1)}/j)</span></span>} />
+        <TeamRankList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={rankings.mostCards.slice(0, 8)} state={state} openTeam={openTeam} render={(t) => (
+          <span className="text-xs"><span className="text-yellow-400 font-bold tabular-nums">{t.yellows}</span>{t.reds > 0 && <span className="text-red-400 font-bold ml-1 tabular-nums">{t.reds}</span>}</span>
+        )} />
+        <TeamRankList title="Mais disciplinados" icon={<Award className="w-4 h-4 text-emerald-400" />} list={rankings.cleanestTeams.slice(0, 8)} state={state} openTeam={openTeam} render={(t) => (
+          <span className="text-xs">
+            {t.totalCards === 0 ? (
+              <span className="text-emerald-400 font-bold">0 cartões</span>
+            ) : (
+              <>
+                <span className="text-yellow-400 font-bold tabular-nums">{t.yellows}</span>
+                {t.reds > 0 && <span className="text-red-400 font-bold ml-1 tabular-nums">{t.reds}</span>}
+              </>
+            )}
+          </span>
+        )} />
+      </div>
+    </section>
+  );
+}
+
+function TeamRankList({ title, icon, list, state, render, openTeam }) {
+  return (
+    <Card className="p-3">
+      <h3 className="text-sm font-bold uppercase tracking-wider mb-2 flex items-center gap-2">{icon}{title}</h3>
+      <div className="space-y-1">
+        {list.map((t, i) => (
+          <button key={t.teamId} onClick={() => openTeam?.(t.teamId)} className="w-full flex items-center gap-2 text-sm border-b border-slate-800/40 last:border-0 pb-1 last:pb-0 hover:bg-slate-800/30 rounded px-1 transition text-left">
+            <span className={cls('text-xs font-bold w-5 text-right', i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+            <span>{t.flag}</span>
+            <span className="flex-1 truncate font-medium">{t.name}</span>
+            <OwnerTag owner={t.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+              p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+            <div className="min-w-[60px] text-right">{render(t)}</div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ========== Time da Rodada (com seletor) ========== */
+function BestXIByRoundSection({ state }) {
+  const rounds = useMemo(() => getAllRoundKeys(state), [state.matches]);
+  const [selectedRound, setSelectedRound] = useState('all');
+
+  const playedRounds = useMemo(() => rounds.filter((r) => {
+    const ms = r.stage === 'group'
+      ? state.matches.filter((m) => m.stage === 'group' && m.round === r.round && m.played && !m.autoPlayed)
+      : state.matches.filter((m) => m.stage === r.stage && !m.isExtra && m.played && !m.autoPlayed);
+    return ms.length > 0;
+  }), [rounds, state.matches]);
+
+  const bestXI = useMemo(() => {
+    if (selectedRound === 'all') return computeBestXI(state);
+    return computeBestXIForRound(state, selectedRound);
+  }, [state.matches, state.playerPositions, selectedRound]);
+
+  if (playedRounds.length === 0) return <BestXIField state={state} bestXI={bestXI} />;
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <Users className="w-4 h-4" /> Time do torneio (4-3-3)
+      </h2>
+      {/* Seletor de rodada */}
+      <div className="flex flex-wrap gap-1 mb-3">
+        <button onClick={() => setSelectedRound('all')}
+          className={cls('text-[10px] font-bold uppercase px-2.5 py-1 rounded transition',
+            selectedRound === 'all' ? 'bg-lime-500 text-lime-950' : 'bg-slate-800 text-slate-400 hover:bg-slate-700')}>
+          Geral
+        </button>
+        {playedRounds.map((r) => (
+          <button key={r.key} onClick={() => setSelectedRound(r.key)}
+            className={cls('text-[10px] font-bold uppercase px-2.5 py-1 rounded transition',
+              selectedRound === r.key ? 'bg-lime-500 text-lime-950' : 'bg-slate-800 text-slate-400 hover:bg-slate-700')}>
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <BestXIField state={state} bestXI={bestXI} hideTitle />
+    </section>
+  );
+}
+
+/* ========== Lista com paginação (scroll) ========== */
+function ScrollableList({ items, render, maxHeight = '420px', emptyMessage = 'Sem dados.' }) {
+  if (items.length === 0) {
+    return <div className="text-xs text-slate-600 italic py-2">{emptyMessage}</div>;
+  }
+  return (
+    <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
+      <div className="space-y-1">
+        {items.map((it, i) => render(it, i))}
+      </div>
+    </div>
+  );
+}
+
+function StatsList({ title, icon, list, render, state, maxHeight = '320px' }) {
   return (
     <Card className="p-3">
       <h3 className="text-sm font-bold uppercase tracking-wider mb-2 flex items-center gap-2">{icon}{title}</h3>
       {list.length === 0 ? (
         <div className="text-xs text-slate-600 italic py-2">Sem dados ainda.</div>
       ) : (
-        <div className="space-y-1">
-          {list.map((s, i) => (
-            <div key={`${s.teamId}|${s.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
-              <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
-              {s.teamFlag && <span className="text-sm">{s.teamFlag}</span>}
-              <span className="flex-1 truncate min-w-0">
-                <span className="font-bold">{s.playerName}</span>
-                <span className="text-xs text-slate-500 ml-1.5">{s.teamName}</span>
-              </span>
-              {state && (
-                <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
-                  p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-              )}
-              <div>{render(s)}</div>
-            </div>
-          ))}
+        <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
+          <div className="space-y-1">
+            {list.map((s, i) => (
+              <div key={`${s.teamId}|${s.playerName}`} className="flex items-center gap-2 text-sm border-b border-slate-800/60 last:border-0 pb-1 last:pb-0">
+                <span className="text-xs text-slate-500 w-5 text-right">{i + 1}.</span>
+                {s.teamFlag && <span className="text-sm">{s.teamFlag}</span>}
+                <span className="flex-1 truncate min-w-0">
+                  <span className="font-bold">{s.playerName}</span>
+                  <span className="text-xs text-slate-500 ml-1.5">{s.teamName}</span>
+                </span>
+                {state && (
+                  <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                    p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                )}
+                <div>{render(s)}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </Card>
