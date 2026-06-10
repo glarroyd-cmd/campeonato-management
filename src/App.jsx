@@ -1167,7 +1167,7 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTea
     return (
       <div className="space-y-4">
         <HeadToHeadCard state={state} h2h={h2h} />
-        <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} />
+        <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} openTeam={openTeam} />
         <div className="text-center text-slate-500 py-12">Este torneio é mata-mata direto. Use a aba "Mata-Mata".</div>
       </div>
     );
@@ -1183,7 +1183,7 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTea
   return (
     <div className="space-y-4">
       <HeadToHeadCard state={state} h2h={h2h} />
-      <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} />
+      <UpcomingMatchesCard state={state} upcoming={upcoming} openMatch={openMatch} openTeam={openTeam} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {state.groups.map((g) => (
@@ -1196,7 +1196,6 @@ function GroupsView({ state, update, updateMatches, allTeams, openMatch, openTea
               bestThirdsCount={format.bestThirds}
               openTeam={openTeam}
             />
-            <GroupTeamsNeedsPanel state={state} groupLetter={g.letter} openMatch={openMatch} />
           </Card>
         ))}
       </div>
@@ -1484,7 +1483,7 @@ function HeadToHeadCard({ state, h2h }) {
 }
 
 /* === Card de próximos jogos com "ficar de olho" === */
-function UpcomingMatchesCard({ state, upcoming, openMatch }) {
+function UpcomingMatchesCard({ state, upcoming, openMatch, openTeam }) {
   if (upcoming.length === 0) return null;
   return (
     <Card className="p-4">
@@ -1494,45 +1493,98 @@ function UpcomingMatchesCard({ state, upcoming, openMatch }) {
       </h3>
       <div className="space-y-3">
         {upcoming.map((m) => (
-          <UpcomingMatchRow key={m.id} state={state} match={m} openMatch={openMatch} />
+          <UpcomingMatchRow key={m.id} state={state} match={m} openMatch={openMatch} openTeam={openTeam} />
         ))}
       </div>
     </Card>
   );
 }
 
-function UpcomingMatchRow({ state, match, openMatch }) {
+/* Linha de um jogo pendente com os times clicáveis (perfil) e o "o que cada time precisa" embaixo */
+function UpcomingMatchRow({ state, match, openMatch, openTeam }) {
   const home = getTeamById(state, match.homeTeamId);
   const away = getTeamById(state, match.awayTeamId);
   const homeColor = getOwnerColor(state, home?.owner);
   const awayColor = getOwnerColor(state, away?.owner);
   const stageLbl = match.stage === 'group' ? `Grupo ${match.group} · R${match.round}` : (STAGE_LABELS[match.stage] || match.stage);
 
+  /* Necessidade de cada time (só pra jogos de fase de grupos) */
+  const minimumNeeds = useMemo(() => {
+    if (match.stage !== 'group') return null;
+    return computeGroupMinimumNeeds(state, match.group, match.id);
+  }, [state, match.stage, match.group, match.id]);
+
+  const homeNeed = minimumNeeds?.[match.homeTeamId];
+  const awayNeed = minimumNeeds?.[match.awayTeamId];
+
+  const styleByType = {
+    guaranteed:     { text: 'text-emerald-300', dot: 'bg-emerald-400' },
+    impossible:     { text: 'text-red-300',     dot: 'bg-red-400' },
+    needs_min:      { text: 'text-amber-300',   dot: 'bg-amber-400' },
+    needs_help:     { text: 'text-orange-300',  dot: 'bg-orange-400' },
+    third_chase:    { text: 'text-yellow-200',  dot: 'bg-yellow-400' },
+    third_only:     { text: 'text-yellow-200',  dot: 'bg-yellow-400' },
+    depends_others: { text: 'text-slate-300',   dot: 'bg-slate-400' },
+    unknown:        { text: 'text-slate-400',   dot: 'bg-slate-500' },
+  };
+
+  const handleTeamClick = (e, teamId) => {
+    e.stopPropagation();
+    openTeam?.(teamId);
+  };
+
   return (
-    <button
+    <div
       onClick={() => openMatch(match.id)}
-      className="w-full text-left p-2.5 rounded-lg border-2 border-dashed border-slate-700 hover:border-lime-400 transition block"
+      className="w-full text-left p-2.5 rounded-lg border-2 border-dashed border-slate-700 hover:border-lime-400 transition cursor-pointer"
       style={{ background: `linear-gradient(90deg, ${homeColor}1F 0%, transparent 50%, ${awayColor}1F 100%)` }}
     >
       <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">{stageLbl}</div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-        <div className="flex items-center gap-1.5 justify-end text-right truncate min-w-0">
+        <button onClick={(e) => handleTeamClick(e, match.homeTeamId)}
+          className="flex items-center gap-1.5 justify-end text-right truncate min-w-0 hover:text-lime-300 transition">
           <div className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
             <span className="truncate font-bold">{home?.flag} {home?.name}</span>
             <OwnerTag owner={home?.owner} p1Name={state.player1Name} p2Name={state.player2Name}
               p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
-        </div>
+        </button>
         <div className="text-slate-600 font-mono font-black">×</div>
-        <div className="flex items-center gap-1.5 truncate min-w-0">
+        <button onClick={(e) => handleTeamClick(e, match.awayTeamId)}
+          className="flex items-center gap-1.5 truncate min-w-0 hover:text-lime-300 transition">
           <div className="flex flex-col items-start gap-0.5 min-w-0 max-w-full">
             <span className="truncate font-bold">{away?.flag} {away?.name}</span>
             <OwnerTag owner={away?.owner} p1Name={state.player1Name} p2Name={state.player2Name}
               p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
           </div>
-        </div>
+        </button>
       </div>
-    </button>
+
+      {/* O que cada time precisa */}
+      {(homeNeed || awayNeed) && (
+        <div className="mt-2 pt-2 border-t border-slate-800/60 grid grid-cols-2 gap-2">
+          <NeedSummary need={homeNeed} styleByType={styleByType} side="left" />
+          <NeedSummary need={awayNeed} styleByType={styleByType} side="right" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NeedSummary({ need, styleByType, side }) {
+  if (!need) return <div />;
+  const sty = styleByType[need.type] || styleByType.unknown;
+  return (
+    <div className={cls('text-[10px]', side === 'right' && 'text-right')}>
+      <div className={cls('flex items-center gap-1.5 leading-tight', side === 'right' && 'justify-end', sty.text)}>
+        {side === 'left' && <span className={cls('w-1.5 h-1.5 rounded-full flex-shrink-0', sty.dot)} />}
+        <span className="font-bold uppercase tracking-wider truncate">{need.label}</span>
+        {side === 'right' && <span className={cls('w-1.5 h-1.5 rounded-full flex-shrink-0', sty.dot)} />}
+      </div>
+      {need.detail && (
+        <div className="text-slate-500 italic mt-0.5 truncate">{need.detail}</div>
+      )}
+    </div>
   );
 }
 
