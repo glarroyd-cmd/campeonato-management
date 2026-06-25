@@ -540,25 +540,81 @@ function reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIdx) {
    ============================================================ */
 
 /* Padrão R32 da Copa 2026 — 16 jogos.
-   home/away referem-se a slots: 1A, 2A, ..., 3rd[1..N] */
+   A ordem abaixo NÃO é cronológica: ela já está ordenada pelo caminho da chave,
+   para que a geração genérica dos estágios seguintes conecte os vencedores
+   exatamente como o bracket oficial da FIFA.
+
+   matchNo = número oficial FIFA (M73..M88).
+   allowedThirds = grupos possíveis para o 3º colocado naquele slot. */
 const R32_PATTERN_WC2026 = [
-  { id: 1,  home: '1A',  away: '3rd' },
-  { id: 2,  home: '1B',  away: '3rd' },
-  { id: 3,  home: '1C',  away: '3rd' },
-  { id: 4,  home: '1D',  away: '3rd' },
-  { id: 5,  home: '1E',  away: '3rd' },
-  { id: 6,  home: '1F',  away: '3rd' },
-  { id: 7,  home: '1G',  away: '3rd' },
-  { id: 8,  home: '1H',  away: '3rd' },
-  { id: 9,  home: '1I',  away: '2J' },
-  { id: 10, home: '1J',  away: '2I' },
-  { id: 11, home: '1K',  away: '2L' },
-  { id: 12, home: '1L',  away: '2K' },
-  { id: 13, home: '2A',  away: '2B' },
-  { id: 14, home: '2C',  away: '2D' },
-  { id: 15, home: '2E',  away: '2F' },
-  { id: 16, home: '2G',  away: '2H' },
+  // M89: W74 x W77
+  { id: 1,  matchNo: 74, home: '1E', away: '3rd', allowedThirds: ['A', 'B', 'C', 'D', 'F'] },
+  { id: 2,  matchNo: 77, home: '1I', away: '3rd', allowedThirds: ['C', 'D', 'F', 'G', 'H'] },
+
+  // M90: W73 x W75
+  { id: 3,  matchNo: 73, home: '2A', away: '2B' },
+  { id: 4,  matchNo: 75, home: '1F', away: '2C' },
+
+  // M93: W83 x W84
+  { id: 5,  matchNo: 83, home: '2K', away: '2L' },
+  { id: 6,  matchNo: 84, home: '1H', away: '2J' },
+
+  // M94: W81 x W82
+  { id: 7,  matchNo: 81, home: '1D', away: '3rd', allowedThirds: ['B', 'E', 'F', 'I', 'J'] },
+  { id: 8,  matchNo: 82, home: '1G', away: '3rd', allowedThirds: ['A', 'E', 'H', 'I', 'J'] },
+
+  // M91: W76 x W78
+  { id: 9,  matchNo: 76, home: '1C', away: '2F' },
+  { id: 10, matchNo: 78, home: '2E', away: '2I' },
+
+  // M92: W79 x W80
+  { id: 11, matchNo: 79, home: '1A', away: '3rd', allowedThirds: ['C', 'E', 'F', 'H', 'I'] },
+  { id: 12, matchNo: 80, home: '1L', away: '3rd', allowedThirds: ['E', 'H', 'I', 'J', 'K'] },
+
+  // M95: W86 x W88
+  { id: 13, matchNo: 86, home: '1J', away: '2H' },
+  { id: 14, matchNo: 88, home: '2D', away: '2G' },
+
+  // M96: W85 x W87
+  { id: 15, matchNo: 85, home: '1B', away: '3rd', allowedThirds: ['E', 'F', 'G', 'I', 'J'] },
+  { id: 16, matchNo: 87, home: '1K', away: '3rd', allowedThirds: ['D', 'E', 'I', 'J', 'L'] },
 ];
+
+function assignThirdPlacedTeams(pattern, bestThirds) {
+  const thirdSlots = pattern
+    .map((p, idx) => ({ ...p, patternIndex: idx }))
+    .filter((p) => p.home === '3rd' || p.away === '3rd');
+
+  const qualifiedGroups = new Set(bestThirds.map((t) => t.group));
+  const assignment = {};
+
+  const canComplete = (slotIndex, usedGroups) => {
+    const remainingSlots = thirdSlots.slice(slotIndex);
+    const remainingGroups = [...qualifiedGroups].filter((g) => !usedGroups.has(g));
+    return remainingSlots.every((slot) =>
+      remainingGroups.some((g) => (slot.allowedThirds || []).includes(g))
+    );
+  };
+
+  function backtrack(slotIndex, usedGroups) {
+    if (slotIndex >= thirdSlots.length) return true;
+    const slot = thirdSlots[slotIndex];
+    const candidates = bestThirds
+      .filter((t) => !usedGroups.has(t.group) && (slot.allowedThirds || []).includes(t.group));
+
+    for (const team of candidates) {
+      usedGroups.add(team.group);
+      assignment[slot.patternIndex] = team.id;
+      if (canComplete(slotIndex + 1, usedGroups) && backtrack(slotIndex + 1, usedGroups)) return true;
+      usedGroups.delete(team.group);
+      delete assignment[slot.patternIndex];
+    }
+    return false;
+  }
+
+  backtrack(0, new Set());
+  return assignment;
+}
 
 /* R16 padrão pra 32 times (Copa antiga) */
 const R16_PATTERN_WC_CLASSIC = [
@@ -631,15 +687,21 @@ export function makeKnockoutMatches(state) {
         .filter((t) => t && t.id)
         .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
       const bestThirds = thirds.slice(0, format.bestThirds);
-      let i = 0;
-      const firstStagePattern = getFirstKnockoutPattern(format).pattern;
-      firstStageSlots = firstStagePattern.map((p) => {
-        const resolve = (slotName) => {
-          if (slotName === '3rd') return bestThirds[i++]?.id || null;
-          return slotToTeam[slotName] || null;
-        };
-        return { home: resolve(p.home), away: resolve(p.away) };
-      });
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    const thirdAssignments = format.id === 'wc2026'
+      ? assignThirdPlacedTeams(firstStagePattern, bestThirds)
+      : null;
+    let i = 0;
+    firstStageSlots = firstStagePattern.map((p, patternIndex) => {
+      const resolve = (slotName) => {
+        if (slotName === '3rd') {
+          if (thirdAssignments) return thirdAssignments[patternIndex] || null;
+          return bestThirds[i++]?.id || null;
+        }
+        return slotToTeam[slotName] || null;
+      };
+      return { home: resolve(p.home), away: resolve(p.away) };
+    });
     } else {
       const firstStagePattern = getFirstKnockoutPattern(format).pattern;
       firstStageSlots = firstStagePattern.map((p) => ({
@@ -781,11 +843,17 @@ export function recalcKnockoutSeeding(state) {
       .filter((t) => t && t.id)
       .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
     const bestThirds = thirds.slice(0, format.bestThirds);
-    let i = 0;
     const firstStagePattern = getFirstKnockoutPattern(format).pattern;
-    firstStageSlots = firstStagePattern.map((p) => {
+    const thirdAssignments = format.id === 'wc2026'
+      ? assignThirdPlacedTeams(firstStagePattern, bestThirds)
+      : null;
+    let i = 0;
+    firstStageSlots = firstStagePattern.map((p, patternIndex) => {
       const resolve = (slotName) => {
-        if (slotName === '3rd') return bestThirds[i++]?.id || null;
+        if (slotName === '3rd') {
+          if (thirdAssignments) return thirdAssignments[patternIndex] || null;
+          return bestThirds[i++]?.id || null;
+        }
         return slotToTeam[slotName] || null;
       };
       return { home: resolve(p.home), away: resolve(p.away) };
@@ -800,6 +868,7 @@ export function recalcKnockoutSeeding(state) {
   let changed = false;
   const newMatches = state.matches.map((m) => {
     if (m.stage !== firstStage || m.isExtra) return m;
+    if (m.manualSeedLock) return m;
     const slot = firstStageSlots[m.koIndex];
     if (!slot) return m;
     /* Para legs 1 vs 2 — leg 1 usa home original, leg 2 invertido */
@@ -2361,10 +2430,15 @@ export function reshuffleSameOwnerKnockout(state) {
     if (m.played) return m;
     const swap = swapMap[m.koIndex];
     if (!swap) return m;
-    return { ...m, homeTeamId: swap.newHomeId, awayTeamId: swap.newAwayId };
+    return {
+      ...m,
+      homeTeamId: swap.newHomeId,
+      awayTeamId: swap.newAwayId,
+      manualSeedLock: true,
+    };
   });
   /* Propaga os vencedores nos stages seguintes (limpa, já que a base mudou) */
-  const propagated = propagateKnockoutWinners(newMatches);
+  const { matches: propagated } = propagateKnockoutWinners(newMatches);
   return { matches: propagated, swappedPairs };
 }
 
