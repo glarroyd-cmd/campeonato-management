@@ -183,7 +183,12 @@ export default function App() {
         setLoading(false);
         return;
       }
-      setState(loaded);
+      const { matches: seededMatches, changed: seedingChanged } = recalcKnockoutSeeding(loaded);
+      const { matches: propagatedMatches } = propagateKnockoutWinners(seededMatches);
+      const loadedWithCurrentRules = seedingChanged
+        ? { ...loaded, matches: propagatedMatches, _meta: { ...(loaded._meta || {}), lastUpdater: clientId, updatedAt: Date.now() } }
+        : loaded;
+      setState(loadedWithCurrentRules);
       rememberTournament({ code });
       /* Decide view inicial baseado em estado de setup */
       if (!loaded.setupComplete) setView('setup');
@@ -2770,7 +2775,12 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
       const inB = m.stage === B.stage && m.koIndex === B.koIndex;
       if (!inA && !inB) return m;
       const swap = (id) => id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id;
-      return { ...m, homeTeamId: swap(m.homeTeamId), awayTeamId: swap(m.awayTeamId) };
+      return {
+        ...m,
+        homeTeamId: swap(m.homeTeamId),
+        awayTeamId: swap(m.awayTeamId),
+        manualSeedLock: true,
+      };
     });
     /* Junta com matches de outros stages que não foram tocados */
     const groupMatches = state.matches.filter((m) => m.stage === 'group');
