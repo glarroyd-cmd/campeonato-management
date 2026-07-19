@@ -227,8 +227,8 @@ export function defaultRules() {
 }
 
 export const CARD_RULE_LABELS = {
-  fifa: 'FIFA — amarelos zeram antes das semifinais',
-  resetKnockout: 'Amarelos zeram no início do mata-mata',
+  fifa: 'FIFA — amarelos zeram no mata-mata e antes das semifinais',
+  resetKnockout: 'Amarelos zeram apenas no início do mata-mata',
   never: 'Amarelos nunca zeram (só limpam após cumprir suspensão)',
   noSuspension: 'Sem suspensões',
 };
@@ -435,12 +435,28 @@ function compareTiebreaker(tb, a, b, matches) {
    SUSPENSÃO POR CARTÕES
    ============================================================ */
 
-/* Quais stages causam reset de amarelos, dada a regra escolhida. */
-function getCardResetStages(cardRule) {
-  if (cardRule === 'fifa') return ['sf']; // amarelos zeram ANTES das semis
-  if (cardRule === 'resetKnockout') return ['r32', 'r16', 'qf', 'sf', 'final']; // o primeiro stage do mata-mata existente
+/* Quais stages causam reset de amarelos, dada a regra escolhida e o formato do torneio.
+   Retorna a lista de "chaves de stage" onde os yellows são zerados ao iniciar aquele stage. */
+function getCardResetStages(cardRule, state) {
   if (cardRule === 'never' || cardRule === 'noSuspension') return [];
-  return ['sf'];
+
+  const knockoutOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
+  const firstKO = knockoutOrder.find((s) => state?.matches?.some((m) => m.stage === s));
+  const hasSf = state?.matches?.some((m) => m.stage === 'sf');
+
+  if (cardRule === 'fifa') {
+    /* Regra FIFA oficial: amarelos zeram (1) ao entrar no mata-mata e (2) antes das semis.
+       Suspensões pendentes continuam valendo. */
+    const resets = [];
+    if (firstKO && firstKO !== 'sf' && firstKO !== 'final') resets.push(firstKO);
+    if (hasSf) resets.push('sf');
+    return resets;
+  }
+  if (cardRule === 'resetKnockout') {
+    /* Legacy: apenas um reset no primeiro stage do mata-mata */
+    return firstKO ? [firstKO] : [];
+  }
+  return [];
 }
 
 /* Retorna { suspended, reason }
@@ -451,65 +467,51 @@ export function getPlayerCardStatus(state, teamId, playerName, upToStageKey) {
   if (cardRule === 'noSuspension') return { suspended: false, reason: '' };
 
   const upToIdx = STAGE_ORDER_INDEX[upToStageKey] ?? 999;
-  const resetStages = getCardResetStages(cardRule);
+  const resetStages = getCardResetStages(cardRule, state);
+  const resetIndices = resetStages
+    .map((s) => STAGE_ORDER_INDEX[s])
+    .filter((idx) => typeof idx === 'number' && idx <= upToIdx)
+    .sort((a, b) => a - b);
 
-  /* Acha o primeiro stage de reset que existe nas matches geradas
-     e que vem ANTES do jogo atual */
-  let resetIdx = -1;
-  for (const r of resetStages) {
-    const exists = state.matches.some((m) => m.stage === r);
-    if (exists) {
-      const idx = STAGE_ORDER_INDEX[r] ?? 999;
-      if (idx < upToIdx) resetIdx = idx;
-      break; // pega o primeiro da lista
-    }
-  }
-
-  return reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIdx);
+  return reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIndices);
 }
 
-function reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIdx) {
-  /* Implementação canônica:
-     - yellows = amarelos acumulados (zera por reset OU por cumprir suspensão)
-     - se chega a 2 amarelos => ficar suspenso por 1 jogo (próximo do mesmo jogador)
-       após cumprir esse jogo, yellows volta a 0
-     - vermelho => suspenso 1 jogo, depois libera
-     Retorna { suspended, reason } para o jogo upToIdx
-  */
+function reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIndices) {
+  /* Simula cronologicamente cada jogo:
+     - Antes de processar cada jogo, se seu stage >= algum reset ainda não aplicado → zera yellows
+       (mas MANTÉM suspensão pendente — resets zeram só cartões, não cumprimento)
+     - Se suspenso e o jogo é REAL (não autoPlayed) → cumpre a suspensão nesse jogo
+     - Auto-empates NÃO cumprem suspensão nem contam eventos
+     - 2 amarelos acumulados → suspende próximo jogo, zera yellows
+     - Vermelho → suspende próximo jogo */
   const previous = state.matches
     .filter((m) => m.played && (STAGE_ORDER_INDEX[matchStageKey(m)] ?? 999) < upToIdx)
     .sort((x, y) => (STAGE_ORDER_INDEX[matchStageKey(x)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(y)] ?? 0));
 
-  /* Próximo jogo desse jogador é o upToIdx jogo. Vamos simular cronologicamente:
-     - track yellows count and pendingSuspensionGame (true/false)
-     - quando aparece amarelo => yellows++
-     - quando yellows == 2 => marca suspendNextMatch = true; reset yellows = 0
-     - quando aparece vermelho => suspendNextMatch = true
-     - depois do próximo jogo do MESMO jogador, suspendNextMatch volta pra false
-     Mas como contamos jogos do mesmo jogador? Considerando que "próximo jogo" é qualquer jogo do time dele.
-     Vou considerar: suspendNextMatch = true => o próximo jogo do TIME do jogador o jogador fica de fora.
-     Se um jogo passa, suspendNextMatch volta pra false.
-  */
   let yellows = 0;
   let suspendThisGame = false;
-  let resetApplied = false;
   let lastReason = '';
-  let lastStageProcessed = -1;
+  const appliedResets = new Set();
 
   for (const m of previous) {
     const thisIdx = STAGE_ORDER_INDEX[matchStageKey(m)] ?? 999;
 
-    /* Reset stage de amarelos: zerar yellows antes de processar este jogo */
-    if (!resetApplied && resetIdx >= 0 && thisIdx >= resetIdx) {
-      yellows = 0;
-      resetApplied = true;
+    /* Aplica todos os resets que caem antes ou nesse stage e ainda não foram aplicados */
+    for (const rIdx of resetIndices) {
+      if (thisIdx >= rIdx && !appliedResets.has(rIdx)) {
+        yellows = 0;
+        appliedResets.add(rIdx);
+      }
     }
 
     const isTeamMatch = m.homeTeamId === teamId || m.awayTeamId === teamId;
     if (!isTeamMatch) continue;
 
-    /* Se entrou neste jogo suspendThisGame=true, considera-se que ele cumpriu a suspensão neste jogo
-       (não computamos eventos dele neste jogo, mas a suspensão "queima") */
+    /* Auto-empate: não cumpre suspensão nem gera eventos.
+       O jogador continua suspenso pro próximo jogo real. */
+    if (m.autoPlayed) continue;
+
+    /* Se estava suspenso, esse jogo real cumpre a suspensão */
     if (suspendThisGame) {
       suspendThisGame = false;
       lastReason = '';
@@ -529,10 +531,67 @@ function reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIdx) {
         lastReason = 'expulso no jogo anterior';
       }
     }
-    lastStageProcessed = thisIdx;
+  }
+
+  /* Reset final: se algum stage de reset cai entre o último jogo e o jogo atual,
+     zera yellows (irrelevante pra suspended aqui — só afeta yellows, e essa
+     variável não é retornada). Mantido pra completude. */
+  for (const rIdx of resetIndices) {
+    if (!appliedResets.has(rIdx)) {
+      yellows = 0;
+      appliedResets.add(rIdx);
+    }
   }
 
   return { suspended: suspendThisGame, reason: lastReason };
+}
+
+/* ============================================================
+   TABELA DE SUSPENSOS
+   Lista todos os jogadores atualmente suspensos, com próximo jogo do time.
+   ============================================================ */
+export function computeAllSuspended(state) {
+  const result = [];
+  const teams = getAllTeams(state);
+
+  for (const team of teams) {
+    /* Próximo jogo real (não autoPlayed) do time */
+    const nextMatch = state.matches
+      .filter((m) => !m.played && !m.autoPlayed &&
+                     (m.homeTeamId === team.id || m.awayTeamId === team.id))
+      .sort((a, b) =>
+        (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 999) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 999))[0];
+
+    if (!nextMatch) continue;
+
+    const nextStageKey = matchStageKey(nextMatch);
+    const roster = state.teamRosters?.[team.id] || [];
+
+    for (const playerName of roster) {
+      const status = getPlayerCardStatus(state, team.id, playerName, nextStageKey);
+      if (status.suspended) {
+        const oppId = nextMatch.homeTeamId === team.id ? nextMatch.awayTeamId : nextMatch.homeTeamId;
+        const opponent = getTeamById(state, oppId);
+        result.push({
+          teamId: team.id,
+          teamName: team.name,
+          teamFlag: team.flag,
+          owner: team.owner,
+          playerName,
+          reason: status.reason,
+          nextMatch,
+          opponent,
+        });
+      }
+    }
+  }
+
+  /* Ordena por dono → time → jogador */
+  return result.sort((a, b) => {
+    if (a.owner !== b.owner) return (a.owner || '').localeCompare(b.owner || '');
+    if (a.teamName !== b.teamName) return a.teamName.localeCompare(b.teamName);
+    return a.playerName.localeCompare(b.playerName);
+  });
 }
 
 /* ============================================================
@@ -540,81 +599,25 @@ function reEvaluateSuspension(state, teamId, playerName, upToIdx, resetIdx) {
    ============================================================ */
 
 /* Padrão R32 da Copa 2026 — 16 jogos.
-   A ordem abaixo NÃO é cronológica: ela já está ordenada pelo caminho da chave,
-   para que a geração genérica dos estágios seguintes conecte os vencedores
-   exatamente como o bracket oficial da FIFA.
-
-   matchNo = número oficial FIFA (M73..M88).
-   allowedThirds = grupos possíveis para o 3º colocado naquele slot. */
+   home/away referem-se a slots: 1A, 2A, ..., 3rd[1..N] */
 const R32_PATTERN_WC2026 = [
-  // M89: W74 x W77
-  { id: 1,  matchNo: 74, home: '1E', away: '3rd', allowedThirds: ['A', 'B', 'C', 'D', 'F'] },
-  { id: 2,  matchNo: 77, home: '1I', away: '3rd', allowedThirds: ['C', 'D', 'F', 'G', 'H'] },
-
-  // M90: W73 x W75
-  { id: 3,  matchNo: 73, home: '2A', away: '2B' },
-  { id: 4,  matchNo: 75, home: '1F', away: '2C' },
-
-  // M93: W83 x W84
-  { id: 5,  matchNo: 83, home: '2K', away: '2L' },
-  { id: 6,  matchNo: 84, home: '1H', away: '2J' },
-
-  // M94: W81 x W82
-  { id: 7,  matchNo: 81, home: '1D', away: '3rd', allowedThirds: ['B', 'E', 'F', 'I', 'J'] },
-  { id: 8,  matchNo: 82, home: '1G', away: '3rd', allowedThirds: ['A', 'E', 'H', 'I', 'J'] },
-
-  // M91: W76 x W78
-  { id: 9,  matchNo: 76, home: '1C', away: '2F' },
-  { id: 10, matchNo: 78, home: '2E', away: '2I' },
-
-  // M92: W79 x W80
-  { id: 11, matchNo: 79, home: '1A', away: '3rd', allowedThirds: ['C', 'E', 'F', 'H', 'I'] },
-  { id: 12, matchNo: 80, home: '1L', away: '3rd', allowedThirds: ['E', 'H', 'I', 'J', 'K'] },
-
-  // M95: W86 x W88
-  { id: 13, matchNo: 86, home: '1J', away: '2H' },
-  { id: 14, matchNo: 88, home: '2D', away: '2G' },
-
-  // M96: W85 x W87
-  { id: 15, matchNo: 85, home: '1B', away: '3rd', allowedThirds: ['E', 'F', 'G', 'I', 'J'] },
-  { id: 16, matchNo: 87, home: '1K', away: '3rd', allowedThirds: ['D', 'E', 'I', 'J', 'L'] },
+  { id: 1,  home: '1A',  away: '3rd' },
+  { id: 2,  home: '1B',  away: '3rd' },
+  { id: 3,  home: '1C',  away: '3rd' },
+  { id: 4,  home: '1D',  away: '3rd' },
+  { id: 5,  home: '1E',  away: '3rd' },
+  { id: 6,  home: '1F',  away: '3rd' },
+  { id: 7,  home: '1G',  away: '3rd' },
+  { id: 8,  home: '1H',  away: '3rd' },
+  { id: 9,  home: '1I',  away: '2J' },
+  { id: 10, home: '1J',  away: '2I' },
+  { id: 11, home: '1K',  away: '2L' },
+  { id: 12, home: '1L',  away: '2K' },
+  { id: 13, home: '2A',  away: '2B' },
+  { id: 14, home: '2C',  away: '2D' },
+  { id: 15, home: '2E',  away: '2F' },
+  { id: 16, home: '2G',  away: '2H' },
 ];
-
-function assignThirdPlacedTeams(pattern, bestThirds) {
-  const thirdSlots = pattern
-    .map((p, idx) => ({ ...p, patternIndex: idx }))
-    .filter((p) => p.home === '3rd' || p.away === '3rd');
-
-  const qualifiedGroups = new Set(bestThirds.map((t) => t.group));
-  const assignment = {};
-
-  const canComplete = (slotIndex, usedGroups) => {
-    const remainingSlots = thirdSlots.slice(slotIndex);
-    const remainingGroups = [...qualifiedGroups].filter((g) => !usedGroups.has(g));
-    return remainingSlots.every((slot) =>
-      remainingGroups.some((g) => (slot.allowedThirds || []).includes(g))
-    );
-  };
-
-  function backtrack(slotIndex, usedGroups) {
-    if (slotIndex >= thirdSlots.length) return true;
-    const slot = thirdSlots[slotIndex];
-    const candidates = bestThirds
-      .filter((t) => !usedGroups.has(t.group) && (slot.allowedThirds || []).includes(t.group));
-
-    for (const team of candidates) {
-      usedGroups.add(team.group);
-      assignment[slot.patternIndex] = team.id;
-      if (canComplete(slotIndex + 1, usedGroups) && backtrack(slotIndex + 1, usedGroups)) return true;
-      usedGroups.delete(team.group);
-      delete assignment[slot.patternIndex];
-    }
-    return false;
-  }
-
-  backtrack(0, new Set());
-  return assignment;
-}
 
 /* R16 padrão pra 32 times (Copa antiga) */
 const R16_PATTERN_WC_CLASSIC = [
@@ -687,21 +690,15 @@ export function makeKnockoutMatches(state) {
         .filter((t) => t && t.id)
         .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
       const bestThirds = thirds.slice(0, format.bestThirds);
-    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
-    const thirdAssignments = format.id === 'wc2026'
-      ? assignThirdPlacedTeams(firstStagePattern, bestThirds)
-      : null;
-    let i = 0;
-    firstStageSlots = firstStagePattern.map((p, patternIndex) => {
-      const resolve = (slotName) => {
-        if (slotName === '3rd') {
-          if (thirdAssignments) return thirdAssignments[patternIndex] || null;
-          return bestThirds[i++]?.id || null;
-        }
-        return slotToTeam[slotName] || null;
-      };
-      return { home: resolve(p.home), away: resolve(p.away) };
-    });
+      let i = 0;
+      const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+      firstStageSlots = firstStagePattern.map((p) => {
+        const resolve = (slotName) => {
+          if (slotName === '3rd') return bestThirds[i++]?.id || null;
+          return slotToTeam[slotName] || null;
+        };
+        return { home: resolve(p.home), away: resolve(p.away) };
+      });
     } else {
       const firstStagePattern = getFirstKnockoutPattern(format).pattern;
       firstStageSlots = firstStagePattern.map((p) => ({
@@ -843,17 +840,11 @@ export function recalcKnockoutSeeding(state) {
       .filter((t) => t && t.id)
       .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
     const bestThirds = thirds.slice(0, format.bestThirds);
-    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
-    const thirdAssignments = format.id === 'wc2026'
-      ? assignThirdPlacedTeams(firstStagePattern, bestThirds)
-      : null;
     let i = 0;
-    firstStageSlots = firstStagePattern.map((p, patternIndex) => {
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    firstStageSlots = firstStagePattern.map((p) => {
       const resolve = (slotName) => {
-        if (slotName === '3rd') {
-          if (thirdAssignments) return thirdAssignments[patternIndex] || null;
-          return bestThirds[i++]?.id || null;
-        }
+        if (slotName === '3rd') return bestThirds[i++]?.id || null;
         return slotToTeam[slotName] || null;
       };
       return { home: resolve(p.home), away: resolve(p.away) };
@@ -868,7 +859,6 @@ export function recalcKnockoutSeeding(state) {
   let changed = false;
   const newMatches = state.matches.map((m) => {
     if (m.stage !== firstStage || m.isExtra) return m;
-    if (m.manualSeedLock) return m;
     const slot = firstStageSlots[m.koIndex];
     if (!slot) return m;
     /* Para legs 1 vs 2 — leg 1 usa home original, leg 2 invertido */
@@ -2430,15 +2420,10 @@ export function reshuffleSameOwnerKnockout(state) {
     if (m.played) return m;
     const swap = swapMap[m.koIndex];
     if (!swap) return m;
-    return {
-      ...m,
-      homeTeamId: swap.newHomeId,
-      awayTeamId: swap.newAwayId,
-      manualSeedLock: true,
-    };
+    return { ...m, homeTeamId: swap.newHomeId, awayTeamId: swap.newAwayId };
   });
   /* Propaga os vencedores nos stages seguintes (limpa, já que a base mudou) */
-  const { matches: propagated } = propagateKnockoutWinners(newMatches);
+  const propagated = propagateKnockoutWinners(newMatches);
   return { matches: propagated, swappedPairs };
 }
 
