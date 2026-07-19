@@ -25,7 +25,7 @@ import {
   computePlayersByPosition, computeBestXI,
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
-  computeGroupTeamsOverview,
+  computeGroupTeamsOverview, computeAllSuspended,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
   reshuffleSameOwnerKnockout,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
@@ -183,12 +183,7 @@ export default function App() {
         setLoading(false);
         return;
       }
-      const { matches: seededMatches, changed: seedingChanged } = recalcKnockoutSeeding(loaded);
-      const { matches: propagatedMatches } = propagateKnockoutWinners(seededMatches);
-      const loadedWithCurrentRules = seedingChanged
-        ? { ...loaded, matches: propagatedMatches, _meta: { ...(loaded._meta || {}), lastUpdater: clientId, updatedAt: Date.now() } }
-        : loaded;
-      setState(loadedWithCurrentRules);
+      setState(loaded);
       rememberTournament({ code });
       /* Decide view inicial baseado em estado de setup */
       if (!loaded.setupComplete) setView('setup');
@@ -2775,12 +2770,7 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
       const inB = m.stage === B.stage && m.koIndex === B.koIndex;
       if (!inA && !inB) return m;
       const swap = (id) => id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id;
-      return {
-        ...m,
-        homeTeamId: swap(m.homeTeamId),
-        awayTeamId: swap(m.awayTeamId),
-        manualSeedLock: true,
-      };
+      return { ...m, homeTeamId: swap(m.homeTeamId), awayTeamId: swap(m.awayTeamId) };
     });
     /* Junta com matches de outros stages que não foram tocados */
     const groupMatches = state.matches.filter((m) => m.stage === 'group');
@@ -3100,6 +3090,7 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
   const cleanSheets   = useMemo(() => computeCleanSheets(state),         [state.matches, state.teamRosters, state.playerPositions]);
   const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
   const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
+  const suspended     = useMemo(() => computeAllSuspended(state),        [state.matches, state.teamRosters, state.rules]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
@@ -3225,6 +3216,9 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
           <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} state={state} />
         </div>
       </section>
+
+      {/* Suspensos */}
+      {suspended.length > 0 && <SuspendedPlayersCard state={state} suspended={suspended} openMatch={openMatch} openTeam={openTeam} />}
 
       {/* Sequências e Clean Sheets */}
       {streaks.length > 0 && <StreaksAndCleanSheetsCard state={state} streaks={streaks} cleanSheets={cleanSheets} />}
@@ -3705,6 +3699,71 @@ function PositionRanking({ posDef, list, state }) {
         </div>
       )}
     </Card>
+  );
+}
+
+/* ========== Suspensos pro próximo jogo ========== */
+function SuspendedPlayersCard({ state, suspended, openMatch, openTeam }) {
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-red-400 mb-3 flex items-center gap-2">
+        <span className="inline-block w-2.5 h-3.5 bg-red-500 rounded-sm" />
+        Suspensos pro próximo jogo
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({suspended.length})</span>
+      </h2>
+      <Card className="p-3">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-slate-500">
+              <tr className="border-b border-slate-800">
+                <th className="text-left pb-1.5 pr-2">Time</th>
+                <th className="text-left pb-1.5 pr-2">Dono</th>
+                <th className="text-left pb-1.5 pr-2">Jogador</th>
+                <th className="text-left pb-1.5 pr-2">Motivo</th>
+                <th className="text-left pb-1.5 pl-2">Perde jogo contra</th>
+              </tr>
+            </thead>
+            <tbody>
+              {suspended.map((s) => {
+                const stageLbl = s.nextMatch.stage === 'group'
+                  ? `Grupo ${s.nextMatch.group} · R${s.nextMatch.round}`
+                  : (STAGE_LABELS[s.nextMatch.stage] || s.nextMatch.stage);
+                return (
+                  <tr key={`${s.teamId}|${s.playerName}`} className="border-b border-slate-800/40">
+                    <td className="py-1.5 pr-2">
+                      {openTeam ? (
+                        <button onClick={() => openTeam(s.teamId)} className="hover:text-lime-300 transition text-left">
+                          <span className="mr-1">{s.teamFlag}</span>{s.teamName}
+                        </button>
+                      ) : (<><span className="mr-1">{s.teamFlag}</span>{s.teamName}</>)}
+                    </td>
+                    <td className="py-1.5 pr-2">
+                      <OwnerTag owner={s.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                        p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
+                    </td>
+                    <td className="py-1.5 pr-2 font-bold">{s.playerName}</td>
+                    <td className="py-1.5 pr-2 text-red-300 italic">{s.reason}</td>
+                    <td className="py-1.5 pl-2">
+                      <button onClick={() => openMatch?.(s.nextMatch.id)} className="text-left hover:text-lime-300 transition">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">{stageLbl}</div>
+                        <div className="flex items-center gap-1">
+                          {s.opponent && (
+                            <>
+                              <span>{s.opponent.flag}</span>
+                              <span className="truncate">{s.opponent.name}</span>
+                            </>
+                          )}
+                        </div>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </section>
   );
 }
 
