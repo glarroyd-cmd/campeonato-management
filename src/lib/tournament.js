@@ -824,6 +824,15 @@ export function recalcKnockoutSeeding(state) {
   const koFirstStage = state.matches.filter((m) => m.stage === firstStage && !m.isExtra);
   if (koFirstStage.length === 0) return { matches: state.matches, changed: false };
 
+  /* Times que já estão jogando em slots com resultado — não pode duplicar */
+  const usedInPlayedSlots = new Set();
+  for (const m of koFirstStage) {
+    if (m.played) {
+      if (m.homeTeamId) usedInPlayedSlots.add(m.homeTeamId);
+      if (m.awayTeamId) usedInPlayedSlots.add(m.awayTeamId);
+    }
+  }
+
   /* Calcula slots ideais agora */
   const standings = format.initialGroups.map((g) => ({
     letter: g.letter, rows: computeGroupStanding(state, g.letter),
@@ -861,19 +870,108 @@ export function recalcKnockoutSeeding(state) {
     if (m.stage !== firstStage || m.isExtra) return m;
     const slot = firstStageSlots[m.koIndex];
     if (!slot) return m;
-    /* Para legs 1 vs 2 — leg 1 usa home original, leg 2 invertido */
     const isLeg2 = m.leg === 2;
-    const expectedHome = isLeg2 ? slot.away : slot.home;
-    const expectedAway = isLeg2 ? slot.home : slot.away;
+    let expectedHome = isLeg2 ? slot.away : slot.home;
+    let expectedAway = isLeg2 ? slot.home : slot.away;
     /* Só sobrescreve se este match específico ainda NÃO foi jogado */
     if (m.played) return m;
+    /* PROTEÇÃO ANTI-DUPLICATA: se o time esperado já está em um slot jogado,
+       não coloca aqui — deixa null pro usuário resolver via swap manual */
+    if (expectedHome && usedInPlayedSlots.has(expectedHome)) expectedHome = null;
+    if (expectedAway && usedInPlayedSlots.has(expectedAway)) expectedAway = null;
+    /* Não sobrescreve match já com times atribuídos (caso de swap manual anterior).
+       Só preenche se o slot está vazio (null). */
+    if (m.homeTeamId != null && m.awayTeamId != null) return m;
     if (m.homeTeamId !== expectedHome || m.awayTeamId !== expectedAway) {
       changed = true;
-      return { ...m, homeTeamId: expectedHome, awayTeamId: expectedAway };
+      return {
+        ...m,
+        homeTeamId: m.homeTeamId ?? expectedHome,
+        awayTeamId: m.awayTeamId ?? expectedAway,
+      };
     }
     return m;
   });
   return { matches: newMatches, changed };
+}
+
+/* ============================================================
+   REPARO DE CHAVEAMENTO
+   Detecta e limpa times duplicados no primeiro stage do mata-mata.
+   Mantém jogos jogados intactos, limpa duplicatas em slots não jogados.
+   ============================================================ */
+export function repairKnockoutBracket(state) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return { matches: state.matches, cleared: 0, duplicates: [] };
+  if (!format.knockoutStages || format.knockoutStages.length === 0) {
+    return { matches: state.matches, cleared: 0, duplicates: [] };
+  }
+  const firstStage = format.knockoutStages[0];
+  const firstStageMatches = state.matches.filter((m) => m.stage === firstStage && !m.isExtra);
+
+  /* Coleta times em slots jogados (source of truth) */
+  const usedInPlayed = new Set();
+  for (const m of firstStageMatches) {
+    if (m.played) {
+      if (m.homeTeamId) usedInPlayed.add(m.homeTeamId);
+      if (m.awayTeamId) usedInPlayed.add(m.awayTeamId);
+    }
+  }
+
+  /* Também coleta duplicatas em slots NÃO jogados */
+  const seenInPending = new Set();
+  const duplicates = new Set();
+  for (const m of firstStageMatches) {
+    if (m.played) continue;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if (!tid) continue;
+      if (usedInPlayed.has(tid) || seenInPending.has(tid)) duplicates.add(tid);
+      seenInPending.add(tid);
+    }
+  }
+
+  if (duplicates.size === 0) {
+    return { matches: state.matches, cleared: 0, duplicates: [] };
+  }
+
+  /* Limpa duplicatas apenas em slots NÃO jogados */
+  let cleared = 0;
+  const seen = new Set(usedInPlayed);
+  const newMatches = state.matches.map((m) => {
+    if (m.stage !== firstStage || m.isExtra) return m;
+    if (m.played) return m;
+    let newHome = m.homeTeamId;
+    let newAway = m.awayTeamId;
+    if (newHome && seen.has(newHome)) { newHome = null; cleared++; }
+    else if (newHome) seen.add(newHome);
+    if (newAway && seen.has(newAway)) { newAway = null; cleared++; }
+    else if (newAway) seen.add(newAway);
+    if (newHome !== m.homeTeamId || newAway !== m.awayTeamId) {
+      return { ...m, homeTeamId: newHome, awayTeamId: newAway };
+    }
+    return m;
+  });
+
+  return {
+    matches: newMatches,
+    cleared,
+    duplicates: [...duplicates],
+  };
+}
+
+/* ============================================================
+   REGENERAR MATA-MATA (emergência)
+   Apaga TODOS os jogos do mata-mata (perde placares/eventos) e
+   recria o bracket usando as standings atuais dos grupos.
+   ============================================================ */
+export function regenerateKnockoutBracket(state) {
+  const format = getFormat(state.formatId);
+  if (!format.hasGroups) return state.matches;
+  const groupMatches = state.matches.filter((m) => m.stage === 'group');
+  const freshKO = makeKnockoutMatches(state);
+  const combined = [...groupMatches, ...freshKO];
+  const { matches: seeded } = recalcKnockoutSeeding({ ...state, matches: combined });
+  return seeded;
 }
 
 function shuffle(arr) {
