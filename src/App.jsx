@@ -17,6 +17,7 @@ import {
   makeInitialState, makeGroupMatches, makeKnockoutMatches,
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
   autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
+  repairKnockoutBracket, regenerateKnockoutBracket,
   getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
   computeBestThirds, getPlayerPosition,
   computeHeadToHead, getUpcomingMatches, getNotablePlayersForTeam,
@@ -191,6 +192,12 @@ export default function App() {
       else if (!loaded.teamsComplete) setView('teamsSetup');
       else setView('groups');
       setLoading(false);
+      /* Reparo automático: se detectar duplicatas no bracket, corrige silenciosamente */
+      const repaired = repairKnockoutBracket(loaded);
+      if (repaired.cleared > 0) {
+        console.warn(`[Reparo automático] Removi ${repaired.cleared} slot(s) duplicado(s) do mata-mata.`);
+        setState({ ...loaded, matches: repaired.matches });
+      }
 
       channel = supabase
         .channel(`tournament-${code}`)
@@ -239,7 +246,10 @@ export default function App() {
       /* 1. Recalcula seeding do KO baseado nas standings atuais (só pra slots não jogados) */
       const { matches: afterSeeding } = recalcKnockoutSeeding(intermediate);
       intermediate = { ...intermediate, matches: afterSeeding };
-      /* 2. Propaga vencedores no KO */
+      /* 2. Reparo: remove duplicatas do primeiro stage do KO (proteção contra bugs) */
+      const { matches: afterRepair } = repairKnockoutBracket(intermediate);
+      intermediate = { ...intermediate, matches: afterRepair };
+      /* 3. Propaga vencedores no KO */
       const { matches: afterPropagation } = propagateKnockoutWinners(intermediate.matches);
       return { ...intermediate, matches: afterPropagation };
     });
@@ -2832,6 +2842,25 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     }
   }, [state, updateMatches]);
 
+  const handleRegenerateBracket = useCallback(() => {
+    const anyKoPlayed = state.matches.some((m) => m.stage !== 'group' && m.played);
+    const msg = anyKoPlayed
+      ? 'Regerar o mata-mata vai APAGAR todos os placares, eventos e cartões do mata-mata que já foram registrados. Os jogos da fase de grupos ficam intactos. Confirmar?'
+      : 'Regerar o mata-mata vai reconstruir o chaveamento com base nas standings atuais dos grupos. Confirmar?';
+    if (!window.confirm(msg)) return;
+    const newMatches = regenerateKnockoutBracket(state);
+    updateMatches(newMatches);
+  }, [state, updateMatches]);
+
+  /* Detecta buracos no bracket (slot vazio quando deveria ter time) */
+  const bracketHasHoles = useMemo(() => {
+    const firstStage = mainStages[0];
+    if (!firstStage) return false;
+    return koMatches.some((m) =>
+      m.stage === firstStage && !m.isExtra && !m.played &&
+      (!m.homeTeamId || !m.awayTeamId));
+  }, [koMatches, mainStages]);
+
   return (
     <div className="space-y-4">
       {/* Botão de sortear same-owner — só aparece quando há pares pra trocar */}
@@ -2847,6 +2876,22 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
           <button onClick={handleReshuffleSameOwner}
             className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-500 text-amber-950 hover:bg-amber-400 transition flex items-center gap-1">
             <Shuffle className="w-3.5 h-3.5" /> Sortear adversários
+          </button>
+        </div>
+      )}
+
+      {/* Banner de emergência: bracket com buracos */}
+      {bracketHasHoles && (
+        <div className="flex items-center justify-between gap-3 p-3 bg-red-900/20 border border-red-700/40 rounded-lg text-sm">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400" />
+            <span className="text-red-200">
+              Chaveamento com slots vazios. Use o swap manual pra completar, ou regenere tudo.
+            </span>
+          </div>
+          <button onClick={handleRegenerateBracket}
+            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-red-500 text-red-950 hover:bg-red-400 transition flex items-center gap-1">
+            <Shuffle className="w-3.5 h-3.5" /> Regenerar mata-mata
           </button>
         </div>
       )}
