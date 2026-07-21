@@ -1175,6 +1175,81 @@ export function getTeamById(state, id) {
 /* ============================================================
    ESTATÍSTICAS DE JOGADORES (artilharia, assistências, etc)
    ============================================================ */
+/* ============================================================
+   HELPERS DE PRORROGAÇÃO
+   Prorrogação (isExtra) NÃO é um jogo separado — é uma
+   continuação do último leg do confronto. Estas funções
+   ajudam a agregar dados do main leg + prorrogação.
+   ============================================================ */
+
+/* Encontra a prorrogação associada a este main match.
+   Retorna null se não houver, ou se este não for o último leg do confronto. */
+function findExtraForMainMatch(state, mainMatch) {
+  if (mainMatch.isExtra) return null;
+  const legs = state.matches.filter((m) =>
+    m.stage === mainMatch.stage && m.koIndex === mainMatch.koIndex && !m.isExtra);
+  if (legs.length === 0) return null;
+  const maxLeg = Math.max(...legs.map((l) => l.leg || 1));
+  const currentLeg = mainMatch.leg || 1;
+  if (currentLeg < maxLeg) return null; // prorrogação pertence ao último leg
+  const extra = state.matches.find((m) =>
+    m.stage === mainMatch.stage && m.koIndex === mainMatch.koIndex && m.isExtra);
+  if (!extra || !extra.played) return null;
+  return extra;
+}
+
+/* Retorna versão "consolidada" do main match:
+   - homeScore/awayScore: main leg + prorrogação
+   - events: main + prorrogação juntos
+   - ratings: NÃO consolida aqui (usar getConsolidatedRatings pra ratings) */
+function getConsolidatedMatch(state, mainMatch) {
+  const extra = findExtraForMainMatch(state, mainMatch);
+  if (!extra) return mainMatch;
+  return {
+    ...mainMatch,
+    homeScore: (mainMatch.homeScore ?? 0) + (extra.homeScore ?? 0),
+    awayScore: (mainMatch.awayScore ?? 0) + (extra.awayScore ?? 0),
+    events: [...(mainMatch.events || []), ...(extra.events || [])],
+  };
+}
+
+/* Retorna ratings consolidados: por jogador, média entre notas do main + prorrogação.
+   Formato: { teamId → { playerName → avgRating } } */
+function getConsolidatedRatings(state, mainMatch) {
+  const extra = findExtraForMainMatch(state, mainMatch);
+  const gather = {}; // teamId|playerName → { sum, count, teamId, playerName }
+  const add = (teamId, pname, rating) => {
+    if (rating == null || rating === '') return;
+    const r = parseFloat(rating);
+    if (isNaN(r)) return;
+    const key = `${teamId}|${pname}`;
+    if (!gather[key]) gather[key] = { sum: 0, count: 0, teamId, playerName: pname };
+    gather[key].sum += r;
+    gather[key].count++;
+  };
+  for (const teamId of Object.keys(mainMatch.ratings || {})) {
+    for (const [pname, r] of Object.entries(mainMatch.ratings[teamId] || {})) {
+      add(teamId, pname, r);
+    }
+  }
+  if (extra) {
+    for (const teamId of Object.keys(extra.ratings || {})) {
+      for (const [pname, r] of Object.entries(extra.ratings[teamId] || {})) {
+        add(teamId, pname, r);
+      }
+    }
+  }
+  const result = {};
+  for (const { teamId, playerName, sum, count } of Object.values(gather)) {
+    if (!result[teamId]) result[teamId] = {};
+    result[teamId][playerName] = sum / count;
+  }
+  return result;
+}
+
+/* ============================================================
+   ESTATÍSTICAS DE JOGADORES
+   ============================================================ */
 export function computePlayerStats(state) {
   const map = new Map(); // key: teamId|playerName
   const ensure = (teamId, playerName) => {
@@ -1194,10 +1269,13 @@ export function computePlayerStats(state) {
     return map.get(key);
   };
 
-  /* Eventos */
-  for (const m of state.matches) {
-    if (!m.played || m.autoPlayed) continue;
-    for (const ev of (m.events || [])) {
+  /* Itera cada MAIN MATCH (leg regular); a prorrogação é "absorvida" pelo main. */
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+
+  for (const mainMatch of mainMatches) {
+    /* Eventos: soma main + prorrogação */
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    for (const ev of (consolidated.events || [])) {
       if (!ev.playerName) continue;
       const stat = ensure(ev.teamId, ev.playerName);
       if (ev.type === 'goal') stat.goals++;
@@ -1205,17 +1283,15 @@ export function computePlayerStats(state) {
       else if (ev.type === 'yellow') stat.yellows++;
       else if (ev.type === 'red') stat.reds++;
     }
-    /* Ratings */
-    for (const teamId of Object.keys(m.ratings || {})) {
-      for (const [pname, rating] of Object.entries(m.ratings[teamId] || {})) {
-        if (rating == null || rating === '') continue;
-        const r = parseFloat(rating);
-        if (!isNaN(r)) {
-          const stat = ensure(teamId, pname);
-          stat.ratingSum += r;
-          stat.ratingCount++;
-          stat.matchesPlayed++;
-        }
+    /* Ratings: MÉDIA entre nota do main e nota da prorrogação (por jogador).
+       Conta como 1 partida só. */
+    const ratings = getConsolidatedRatings(state, mainMatch);
+    for (const teamId of Object.keys(ratings)) {
+      for (const [pname, avg] of Object.entries(ratings[teamId])) {
+        const stat = ensure(teamId, pname);
+        stat.ratingSum += avg;
+        stat.ratingCount++;
+        stat.matchesPlayed++;
       }
     }
   }
@@ -1260,19 +1336,20 @@ export function computeTeamStats(state) {
     return teamMap.get(teamId);
   };
 
-  for (const m of state.matches) {
-    if (!m.played || m.autoPlayed) continue;
-    if (!m.homeTeamId || !m.awayTeamId) continue;
-    const h = ensure(m.homeTeamId);
-    const a = ensure(m.awayTeamId);
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    if (!mainMatch.homeTeamId || !mainMatch.awayTeamId) continue;
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    const h = ensure(mainMatch.homeTeamId);
+    const a = ensure(mainMatch.awayTeamId);
     h.P++; a.P++;
-    h.GP += m.homeScore; h.GC += m.awayScore;
-    a.GP += m.awayScore; a.GC += m.homeScore;
-    if (m.homeScore > m.awayScore)      { h.V++; a.D++; h.Pts += 3; }
-    else if (m.homeScore < m.awayScore) { a.V++; h.D++; a.Pts += 3; }
-    else                                { h.E++; a.E++; h.Pts += 1; a.Pts += 1; }
+    h.GP += consolidated.homeScore; h.GC += consolidated.awayScore;
+    a.GP += consolidated.awayScore; a.GC += consolidated.homeScore;
+    if (consolidated.homeScore > consolidated.awayScore)      { h.V++; a.D++; h.Pts += 3; }
+    else if (consolidated.homeScore < consolidated.awayScore) { a.V++; h.D++; a.Pts += 3; }
+    else                                                       { h.E++; a.E++; h.Pts += 1; a.Pts += 1; }
 
-    for (const ev of (m.events || [])) {
+    for (const ev of (consolidated.events || [])) {
       const t = teamMap.get(ev.teamId);
       if (!t) continue;
       if (ev.type === 'yellow') t.yellows++;
@@ -1428,16 +1505,17 @@ export function computeHeadToHead(state) {
     totalMatches: 0,
   };
   for (const m of state.matches) {
-    if (!m.played || m.autoPlayed) continue;
+    if (!m.played || m.autoPlayed || m.isExtra) continue;
     if (!m.homeTeamId || !m.awayTeamId) continue;
     const home = getTeamById(state, m.homeTeamId);
     const away = getTeamById(state, m.awayTeamId);
     if (!home?.owner || !away?.owner) continue;
     if (home.owner === away.owner) continue;
+    const consolidated = getConsolidatedMatch(state, m);
     result.totalMatches++;
     const p1IsHome = home.owner === 'p1';
-    const p1Score = p1IsHome ? m.homeScore : m.awayScore;
-    const p2Score = p1IsHome ? m.awayScore : m.homeScore;
+    const p1Score = p1IsHome ? consolidated.homeScore : consolidated.awayScore;
+    const p2Score = p1IsHome ? consolidated.awayScore : consolidated.homeScore;
     result.p1Goals += p1Score;
     result.p2Goals += p2Score;
     if (p1Score > p2Score) result.p1Wins++;
@@ -1492,8 +1570,11 @@ export function getNotablePlayersForTeam(state, teamId, limit = 3) {
    RECORDES DO TORNEIO
    ============================================================ */
 export function computeTournamentRecords(state) {
-  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
-  if (real.length === 0) return null;
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra && m.homeTeamId && m.awayTeamId);
+  if (mainMatches.length === 0) return null;
+
+  /* Consolida cada main match com sua prorrogação */
+  const real = mainMatches.map((m) => getConsolidatedMatch(state, m));
 
   /* Maior goleada (maior diferença, desempate por mais gols totais) */
   let biggestRout = null;
@@ -1512,7 +1593,7 @@ export function computeTournamentRecords(state) {
     if (cards > 0 && (!mostCardsMatch || cards > mostCardsMatch.cards)) mostCardsMatch = { match: m, cards };
   }
 
-  /* Mais gols por jogador num jogo só */
+  /* Mais gols por jogador num jogo só (soma main + prorrogação) */
   let bestSoloPerformance = null;
   for (const m of real) {
     const goalsByPlayer = {};
@@ -1529,15 +1610,14 @@ export function computeTournamentRecords(state) {
     }
   }
 
-  /* Maior nota individual */
+  /* Maior nota individual do torneio (usa média consolidada do confronto) */
   let bestRating = null;
-  for (const m of real) {
-    for (const teamId of Object.keys(m.ratings || {})) {
-      for (const [pname, rating] of Object.entries(m.ratings[teamId] || {})) {
-        const r = parseFloat(rating);
-        if (isNaN(r)) continue;
+  for (const mm of mainMatches) {
+    const ratings = getConsolidatedRatings(state, mm);
+    for (const teamId of Object.keys(ratings)) {
+      for (const [pname, r] of Object.entries(ratings[teamId])) {
         if (!bestRating || r > bestRating.rating) {
-          bestRating = { match: m, teamId, playerName: pname, rating: r };
+          bestRating = { match: getConsolidatedMatch(state, mm), teamId, playerName: pname, rating: r };
         }
       }
     }
@@ -1554,8 +1634,10 @@ export function getChampionPath(state) {
   const champion = getChampion(state);
   if (!champion) return null;
   const championMatches = state.matches
-    .filter((m) => m.played && !m.autoPlayed && (m.homeTeamId === champion.id || m.awayTeamId === champion.id))
-    .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+    .filter((m) => m.played && !m.autoPlayed && !m.isExtra &&
+                   (m.homeTeamId === champion.id || m.awayTeamId === champion.id))
+    .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0))
+    .map((m) => getConsolidatedMatch(state, m));
   return { champion, matches: championMatches };
 }
 
@@ -1640,19 +1722,21 @@ export function computeTimelineEvents(state) {
   /* Helper pra "tempo" cronológico de um jogo */
   const tOf = (m) => STAGE_ORDER_INDEX[matchStageKey(m)] ?? 0;
 
-  /* 1. Cada jogo jogado vira um evento "match-result" */
-  for (const m of state.matches) {
-    if (!m.played || m.autoPlayed) continue;
-    if (!m.homeTeamId || !m.awayTeamId) continue;
+  /* 1. Cada CONFRONTO jogado vira um evento "match-result" (usa placar consolidado) */
+  for (const mainMatch of state.matches) {
+    if (!mainMatch.played || mainMatch.autoPlayed || mainMatch.isExtra) continue;
+    if (!mainMatch.homeTeamId || !mainMatch.awayTeamId) continue;
+    const m = getConsolidatedMatch(state, mainMatch);
     events.push({
       kind: 'match-result',
       t: tOf(m),
       match: m,
     });
   }
-  /* 2. Hat-tricks (3+ gols num jogo) */
-  for (const m of state.matches) {
-    if (!m.played || m.autoPlayed) continue;
+  /* 2. Hat-tricks (3+ gols num jogo — soma main + prorrogação) */
+  for (const mainMatch of state.matches) {
+    if (!mainMatch.played || mainMatch.autoPlayed || mainMatch.isExtra) continue;
+    const m = getConsolidatedMatch(state, mainMatch);
     const goalsByPlayer = {};
     for (const ev of (m.events || [])) {
       if (ev.type !== 'goal' || !ev.playerName) continue;
@@ -1689,11 +1773,12 @@ export function computeTimelineEvents(state) {
    Maior sequência de vitórias e maior invencibilidade de cada time
    ============================================================ */
 export function computeTeamStreaks(state) {
-  /* Reúne jogos por time em ordem cronológica do torneio */
+  /* Reúne jogos por time em ordem cronológica do torneio (main matches apenas) */
   const matchesByTeam = {};
-  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
-  real.sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
-  for (const m of real) {
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra && m.homeTeamId && m.awayTeamId);
+  mainMatches.sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+  for (const mainMatch of mainMatches) {
+    const m = getConsolidatedMatch(state, mainMatch);
     for (const tid of [m.homeTeamId, m.awayTeamId]) {
       if (!matchesByTeam[tid]) matchesByTeam[tid] = [];
       const isHome = m.homeTeamId === tid;
@@ -1757,9 +1842,9 @@ export function computeTeamStreaks(state) {
    ============================================================ */
 export function computeCleanSheets(state) {
   const map = {};
-  const real = state.matches.filter((m) => m.played && !m.autoPlayed && m.homeTeamId && m.awayTeamId);
-  for (const m of real) {
-    /* Time da casa sofreu m.awayScore gols */
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra && m.homeTeamId && m.awayTeamId);
+  for (const mainMatch of mainMatches) {
+    const m = getConsolidatedMatch(state, mainMatch);
     if (!map[m.homeTeamId]) map[m.homeTeamId] = { teamId: m.homeTeamId, played: 0, cleanSheets: 0, goalsConceded: 0 };
     if (!map[m.awayTeamId]) map[m.awayTeamId] = { teamId: m.awayTeamId, played: 0, cleanSheets: 0, goalsConceded: 0 };
     map[m.homeTeamId].played++;
@@ -1799,8 +1884,9 @@ export function computeOffensiveDependency(state) {
   const goalsByPlayer = {};
   const assistsByPlayer = {};
 
-  const real = state.matches.filter((m) => m.played && !m.autoPlayed);
-  for (const m of real) {
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    const m = getConsolidatedMatch(state, mainMatch);
     goalsByTeam[m.homeTeamId] = (goalsByTeam[m.homeTeamId] || 0) + m.homeScore;
     goalsByTeam[m.awayTeamId] = (goalsByTeam[m.awayTeamId] || 0) + m.awayScore;
     for (const ev of (m.events || [])) {
@@ -2264,10 +2350,13 @@ export function computeTeamDetail(state, teamId) {
   const team = getTeamById(state, teamId);
   if (!team) return null;
 
-  /* Jogos do time em ordem cronológica do torneio */
-  const matches = state.matches
-    .filter((m) => (m.homeTeamId === teamId || m.awayTeamId === teamId) && m.played && !m.autoPlayed)
+  /* Só jogos main (não isExtra) do time em ordem cronológica */
+  const mainMatches = state.matches
+    .filter((m) => (m.homeTeamId === teamId || m.awayTeamId === teamId) && m.played && !m.autoPlayed && !m.isExtra)
     .sort((a, b) => (STAGE_ORDER_INDEX[matchStageKey(a)] ?? 0) - (STAGE_ORDER_INDEX[matchStageKey(b)] ?? 0));
+
+  /* Consolida cada main match com sua prorrogação (placar e eventos) */
+  const matches = mainMatches.map((m) => getConsolidatedMatch(state, m));
 
   /* Stats agregados */
   let GP = 0, GC = 0, V = 0, E = 0, D = 0;
@@ -2286,19 +2375,25 @@ export function computeTeamDetail(state, teamId) {
   const SG = GP - GC;
   const winPct = P > 0 ? Math.round((Pts / (P * 3)) * 100) : 0;
 
-  /* Jogadores do time com stats (do roster + de quem aparece nos eventos) */
+  /* Jogadores: nomes do roster + quem apareceu em eventos/ratings (incluindo extra) */
   const playerNames = new Set(state.teamRosters?.[teamId] || []);
   for (const m of matches) {
     for (const ev of (m.events || [])) {
       if (ev.teamId === teamId && ev.playerName) playerNames.add(ev.playerName);
     }
-    if (m.ratings && m.ratings[teamId]) {
-      for (const p of Object.keys(m.ratings[teamId])) playerNames.add(p);
+  }
+  /* Ratings do main + extra */
+  for (const mm of mainMatches) {
+    if (mm.ratings && mm.ratings[teamId]) {
+      for (const p of Object.keys(mm.ratings[teamId])) playerNames.add(p);
+    }
+    const extra = findExtraForMainMatch(state, mm);
+    if (extra?.ratings && extra.ratings[teamId]) {
+      for (const p of Object.keys(extra.ratings[teamId])) playerNames.add(p);
     }
   }
 
   const playerStats = computePlayerStats(state).filter((p) => p.teamId === teamId);
-  /* Garante que jogadores do roster sem stats também apareçam */
   const stMap = {};
   for (const ps of playerStats) stMap[ps.playerName] = ps;
   const allPlayers = Array.from(playerNames).map((pname) => {
@@ -2368,25 +2463,26 @@ export function getAllRoundKeys(state) {
   return rounds;
 }
 
-/* Filtra matches que pertencem a uma rodada específica */
+/* Filtra MAIN matches que pertencem a uma rodada específica (não isExtra) */
 function matchesInRound(state, roundKey) {
   if (roundKey.startsWith('group_r')) {
     const r = parseInt(roundKey.replace('group_r', ''), 10);
-    return state.matches.filter((m) => m.stage === 'group' && m.round === r && m.played && !m.autoPlayed);
+    return state.matches.filter((m) => m.stage === 'group' && m.round === r && m.played && !m.autoPlayed && !m.isExtra);
   }
   return state.matches.filter((m) => m.stage === roundKey && !m.isExtra && m.played && !m.autoPlayed);
 }
 
 /* Time da rodada (4-3-3) baseado em jogadores que jogaram naquela rodada */
 export function computeBestXIForRound(state, roundKey) {
-  const matches = matchesInRound(state, roundKey);
-  if (matches.length === 0) {
+  const mainMatches = matchesInRound(state, roundKey);
+  if (mainMatches.length === 0) {
     return { GOL: [], ZAG: [], LAT: [], MEI: [], ATA: [], available: {} };
   }
-  /* Pega stats apenas dos eventos+ratings desses matches */
+  /* Pega stats apenas dos eventos+ratings desses matches (com prorrogação consolidada) */
   const playerMap = {}; // 'teamId|playerName' → stats
-  for (const m of matches) {
-    /* Eventos */
+  for (const mainMatch of mainMatches) {
+    const m = getConsolidatedMatch(state, mainMatch);
+    /* Eventos (main + prorrogação já consolidados) */
     for (const ev of (m.events || [])) {
       if (!ev.playerName || !ev.teamId) continue;
       const k = `${ev.teamId}|${ev.playerName}`;
@@ -2396,14 +2492,13 @@ export function computeBestXIForRound(state, roundKey) {
       else if (ev.type === 'yellow') playerMap[k].yellows++;
       else if (ev.type === 'red') playerMap[k].reds++;
     }
-    /* Ratings */
-    for (const teamId of Object.keys(m.ratings || {})) {
-      for (const [pname, val] of Object.entries(m.ratings[teamId] || {})) {
-        const r = parseFloat(val);
-        if (isNaN(r)) continue;
+    /* Ratings: média entre main e prorrogação (1 nota por jogador POR jogo) */
+    const ratings = getConsolidatedRatings(state, mainMatch);
+    for (const teamId of Object.keys(ratings)) {
+      for (const [pname, avgRating] of Object.entries(ratings[teamId])) {
         const k = `${teamId}|${pname}`;
         if (!playerMap[k]) playerMap[k] = { teamId, playerName: pname, goals: 0, assists: 0, yellows: 0, reds: 0, ratingSum: 0, ratingCount: 0 };
-        playerMap[k].ratingSum += r;
+        playerMap[k].ratingSum += avgRating;
         playerMap[k].ratingCount++;
       }
     }
