@@ -1853,20 +1853,19 @@ function MatchDetailView({ state, matchId, updateMatches, update, allTeams, onBa
   const home = getTeamById(state, match.homeTeamId);
   const away = getTeamById(state, match.awayTeamId);
 
-  /* Sequência ordenada de jogos pra navegação Anterior/Próximo */
+  /* Sequência ordenada de jogos pra navegação Anterior/Próximo (pula prorrogações) */
   const orderedMatches = useMemo(() => {
-    return [...state.matches].sort((a, b) => {
+    return state.matches.filter((m) => !m.isExtra).sort((a, b) => {
       const aIdx = STAGE_ORDER_INDEX[matchStageKey(a)] ?? 999;
       const bIdx = STAGE_ORDER_INDEX[matchStageKey(b)] ?? 999;
       if (aIdx !== bIdx) return aIdx - bIdx;
-      /* mesma rodada: ordena por grupo / koIndex / leg / isExtra */
+      /* mesma rodada: ordena por grupo / koIndex / leg */
       if (a.stage === 'group') {
         if (a.group !== b.group) return (a.group || '').localeCompare(b.group || '');
         return a.id.localeCompare(b.id);
       }
       if ((a.koIndex ?? 0) !== (b.koIndex ?? 0)) return (a.koIndex ?? 0) - (b.koIndex ?? 0);
-      if ((a.leg ?? 1) !== (b.leg ?? 1)) return (a.leg ?? 1) - (b.leg ?? 1);
-      return (a.isExtra ? 1 : 0) - (b.isExtra ? 1 : 0);
+      return (a.leg ?? 1) - (b.leg ?? 1);
     });
   }, [state.matches]);
 
