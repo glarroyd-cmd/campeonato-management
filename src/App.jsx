@@ -27,6 +27,7 @@ import {
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
   computeGroupTeamsOverview, computeAllSuspended,
+  computeTeamMetrics, computeGoalkeeperRankings,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
   reshuffleSameOwnerKnockout,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
@@ -2472,6 +2473,9 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
         <SuspensionWarnings state={state} teamId={team.id} players={displayedPlayers} upToStageKey={upToStageKey} />
       )}
 
+      {/* Estatísticas avançadas do time neste jogo */}
+      <TeamStatsInputs match={match} teamId={team.id} updateMatch={updateMatch} />
+
       {/* Tabela de jogadores */}
       <div className="overflow-x-auto -mx-3 px-3">
         <table className="w-full text-xs">
@@ -2480,6 +2484,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
               <th className="text-left pb-1 pr-1">Pos · Jogador</th>
               <th className="pb-1 px-0.5 w-12" title="Gols"><Goal className="w-3.5 h-3.5 text-emerald-400 inline" /></th>
               <th className="pb-1 px-0.5 w-12" title="Assistências"><Hand className="w-3.5 h-3.5 text-sky-400 inline" /></th>
+              <th className="pb-1 px-0.5 w-12" title="Defesas (goleiros)"><span className="text-sm">🧤</span></th>
               <th className="pb-1 px-0.5 w-10" title="Amarelos"><span className="inline-block w-2 h-3 bg-yellow-400 rounded-sm" /></th>
               <th className="pb-1 px-0.5 w-10" title="Vermelhos"><span className="inline-block w-2 h-3 bg-red-500 rounded-sm" /></th>
               <th className="pb-1 px-0.5 w-14" title="Nota"><Star className="w-3.5 h-3.5 text-yellow-300 inline" /></th>
@@ -2489,7 +2494,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
           <tbody>
             {displayedPlayers.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-slate-600 italic text-center py-2">Sem jogadores cadastrados. Adicione abaixo.</td>
+                <td colSpan={8} className="text-slate-600 italic text-center py-2">Sem jogadores cadastrados. Adicione abaixo.</td>
               </tr>
             )}
             {displayedPlayers.map((player) => (
@@ -2501,6 +2506,7 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
                 assists={countEv(player, 'assist')}
                 yellows={countEv(player, 'yellow')}
                 reds={countEv(player, 'red')}
+                saves={countEv(player, 'save')}
                 position={getPlayerPosition(state, team.id, player)}
                 onIncrement={(t) => incrementEvent(player, t)}
                 onDecrement={(t) => decrementEvent(player, t)}
@@ -2545,10 +2551,55 @@ function TeamMatchPanel({ state, match, team, updateMatches, update, allMatches 
 }
 
 /* Linha de jogador na tabela com contadores compactos */
-function PlayerRow({ player, rating, goals, assists, yellows, reds, position, onIncrement, onDecrement, onRename, onSetRating, onRemove, onSetPosition }) {
+/* Inputs pra estatísticas avançadas do time neste jogo: posse, finalizações, xG */
+function TeamStatsInputs({ match, teamId, updateMatch }) {
+  const ts = (match.teamStats || {})[teamId] || {};
+
+  const setStat = (field, rawValue) => {
+    const value = rawValue === '' ? null : rawValue;
+    updateMatch((m) => {
+      const newTeamStats = { ...(m.teamStats || {}) };
+      const cur = { ...(newTeamStats[teamId] || {}) };
+      cur[field] = value;
+      newTeamStats[teamId] = cur;
+      return { ...m, teamStats: newTeamStats };
+    });
+  };
+
+  return (
+    <div className="mb-2 grid grid-cols-3 gap-2 p-2 rounded bg-slate-950/40 border border-slate-800/60">
+      <StatField label="Posse (%)" value={ts.possession ?? ''} step="1" min="0" max="100"
+        onChange={(v) => setStat('possession', v)} placeholder="—" />
+      <StatField label="Finalizações" value={ts.shots ?? ''} step="1" min="0"
+        onChange={(v) => setStat('shots', v)} placeholder="—" integer />
+      <StatField label="xG" value={ts.xG ?? ''} step="0.01" min="0"
+        onChange={(v) => setStat('xG', v)} placeholder="—" />
+    </div>
+  );
+}
+
+function StatField({ label, value, onChange, placeholder, step, min, max, integer }) {
+  return (
+    <label className="flex flex-col gap-0.5 text-[10px]">
+      <span className="uppercase tracking-wider text-slate-500 font-bold">{label}</span>
+      <input
+        type="number"
+        step={step}
+        min={min}
+        max={max}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-slate-900 border border-slate-800 focus:border-lime-400 rounded px-2 py-1 text-xs tabular-nums font-bold outline-none"
+      />
+    </label>
+  );
+}
+
+function PlayerRow({ player, rating, goals, assists, yellows, reds, saves, position, onIncrement, onDecrement, onRename, onSetRating, onRemove, onSetPosition }) {
   const [draftName, setDraftName] = useState(player);
   useEffect(() => { setDraftName(player); }, [player]);
-  const posDef = POSITIONS.find((p) => p.id === position);
+  const isGoalkeeper = position === 'GOL';
 
   return (
     <tr className="border-t border-slate-800/40">
@@ -2568,6 +2619,13 @@ function PlayerRow({ player, rating, goals, assists, yellows, reds, position, on
       </td>
       <td className="px-0.5 py-1">
         <Counter value={assists}  onPlus={() => onIncrement('assist')}  onMinus={() => onDecrement('assist')}  color="sky" />
+      </td>
+      <td className="px-0.5 py-1">
+        {isGoalkeeper ? (
+          <Counter value={saves} onPlus={() => onIncrement('save')} onMinus={() => onDecrement('save')} color="yellow" />
+        ) : (
+          <div className="text-center text-slate-800 text-xs">—</div>
+        )}
       </td>
       <td className="px-0.5 py-1">
         <Counter value={yellows}  onPlus={() => onIncrement('yellow')}  onMinus={() => onDecrement('yellow')}  color="yellow" tight />
@@ -2770,7 +2828,8 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
       setSwapTeam(null); // clicou no mesmo → cancela
       return;
     }
-    /* Executa o swap entre os dois times */
+    /* Executa o swap entre os dois times.
+       Marca os matches afetados como manuallyOverridden pra o propagate respeitar. */
     const A = swapTeam;
     const B = { teamId, stage, koIndex };
     const newMatches = koMatches.map((m) => {
@@ -2779,7 +2838,12 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
       const inB = m.stage === B.stage && m.koIndex === B.koIndex;
       if (!inA && !inB) return m;
       const swap = (id) => id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id;
-      return { ...m, homeTeamId: swap(m.homeTeamId), awayTeamId: swap(m.awayTeamId) };
+      return {
+        ...m,
+        homeTeamId: swap(m.homeTeamId),
+        awayTeamId: swap(m.awayTeamId),
+        manuallyOverridden: true,
+      };
     });
     /* Junta com matches de outros stages que não foram tocados */
     const groupMatches = state.matches.filter((m) => m.stage === 'group');
@@ -2851,6 +2915,21 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     updateMatches(newMatches);
   }, [state, updateMatches]);
 
+  /* Conta swaps manuais ativos (matches com manuallyOverridden) */
+  const manualSwapCount = useMemo(() =>
+    koMatches.filter((m) => m.manuallyOverridden && !m.played && !m.isExtra).length
+  , [koMatches]);
+
+  const handleRestorePropagate = useCallback(() => {
+    if (!window.confirm(`Restaurar a propagação automática vai zerar os ${manualSwapCount} slot(s) customizado(s) manualmente e deixar o algoritmo recolocar os vencedores. Confirmar?`)) return;
+    const newMatches = state.matches.map((m) => {
+      if (m.stage === 'group' || m.isExtra || m.played) return m;
+      if (!m.manuallyOverridden) return m;
+      return { ...m, manuallyOverridden: false, homeTeamId: null, awayTeamId: null };
+    });
+    updateMatches(newMatches);
+  }, [state, updateMatches, manualSwapCount]);
+
   /* Detecta buracos no bracket (slot vazio quando deveria ter time) */
   const bracketHasHoles = useMemo(() => {
     const firstStage = mainStages[0];
@@ -2891,6 +2970,20 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
           <button onClick={handleRegenerateBracket}
             className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-red-500 text-red-950 hover:bg-red-400 transition flex items-center gap-1">
             <Shuffle className="w-3.5 h-3.5" /> Regenerar mata-mata
+          </button>
+        </div>
+      )}
+
+      {/* Banner de swaps manuais ativos */}
+      {manualSwapCount > 0 && !swapTeam && (
+        <div className="flex items-center justify-between gap-3 p-2.5 bg-blue-950/20 border border-blue-700/30 rounded-lg text-xs">
+          <div className="flex items-center gap-2 text-blue-200">
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+            {manualSwapCount} slot{manualSwapCount > 1 ? 's' : ''} customizado{manualSwapCount > 1 ? 's' : ''} manualmente. A propagação automática está desativada neles.
+          </div>
+          <button onClick={handleRestorePropagate}
+            className="font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-blue-700 text-blue-50 hover:bg-blue-600 transition flex items-center gap-1">
+            Restaurar propagação
           </button>
         </div>
       )}
@@ -3135,6 +3228,8 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
   const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
   const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
   const suspended     = useMemo(() => computeAllSuspended(state),        [state.matches, state.teamRosters, state.rules]);
+  const teamMetrics   = useMemo(() => computeTeamMetrics(state),         [state.matches]);
+  const goalkeepers   = useMemo(() => computeGoalkeeperRankings(state),  [state.matches, state.playerPositions]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
@@ -3244,6 +3339,16 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
 
       {/* Estatísticas de equipes */}
       <TeamRankingsSection state={state} openTeam={openTeam} />
+
+      {/* Métricas avançadas de times */}
+      {teamMetrics.some((t) => t.possessionCount > 0 || t.shotsCount > 0 || t.xGCount > 0) && (
+        <AdvancedTeamMetricsSection state={state} rows={teamMetrics} openTeam={openTeam} />
+      )}
+
+      {/* Ranking de goleiros */}
+      {goalkeepers.length > 0 && (
+        <GoalkeeperRankingSection state={state} rows={goalkeepers} openTeam={openTeam} />
+      )}
 
       {/* Recordes */}
       {records && <RecordsCard state={state} records={records} />}
@@ -4172,6 +4277,158 @@ function TeamRankingsSection({ state, openTeam }) {
           </span>
         )} />
       </div>
+    </section>
+  );
+}
+
+/* ========== Métricas avançadas de times (posse, finalizações, xG) ========== */
+function AdvancedTeamMetricsSection({ state, rows, openTeam }) {
+  const withPossession = [...rows].filter((r) => r.possessionAvg != null).sort((a, b) => b.possessionAvg - a.possessionAvg);
+  const withShots      = [...rows].filter((r) => r.shotsAvg != null).sort((a, b) => b.shotsSum - a.shotsSum);
+  const withXG         = [...rows].filter((r) => r.xGAvg != null).sort((a, b) => b.xGSum - a.xGSum);
+  const overperformers = [...rows]
+    .filter((r) => r.xGDiff != null && r.xGCount >= 1)
+    .sort((a, b) => b.xGDiff - a.xGDiff);
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <BarChart3 className="w-4 h-4" /> Estatísticas avançadas
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">— posse, finalizações, xG</span>
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {withPossession.length > 0 && (
+          <TeamRankList
+            title="Mais posse de bola"
+            icon={<span className="text-sm">⚽</span>}
+            list={withPossession.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.possessionAvg.toFixed(1)}%</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.possessionCount}j)</span>
+              </span>
+            )}
+          />
+        )}
+        {withShots.length > 0 && (
+          <TeamRankList
+            title="Mais finalizações"
+            icon={<span className="text-sm">🎯</span>}
+            list={withShots.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.shotsSum}</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.shotsAvg.toFixed(1)}/j)</span>
+              </span>
+            )}
+          />
+        )}
+        {withXG.length > 0 && (
+          <TeamRankList
+            title="Mais xG (perigo criado)"
+            icon={<span className="text-sm">📈</span>}
+            list={withXG.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.xGSum.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.xGAvg.toFixed(2)}/j)</span>
+              </span>
+            )}
+          />
+        )}
+        {overperformers.length > 0 && (
+          <TeamRankList
+            title="Gols vs xG"
+            icon={<span className="text-sm">⚡</span>}
+            list={overperformers.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => {
+              const diff = t.xGDiff;
+              const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-red-400' : 'text-slate-300';
+              const label = diff > 0.5 ? 'acima' : diff < -0.5 ? 'abaixo' : 'no esperado';
+              return (
+                <span className="text-xs">
+                  <span className={cls('font-bold tabular-nums', color)}>
+                    {diff > 0 ? '+' : ''}{diff.toFixed(2)}
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-normal ml-1">{label}</span>
+                </span>
+              );
+            }}
+          />
+        )}
+      </div>
+      <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
+        Dados coletados apenas nos jogos onde as métricas foram preenchidas. Bônus proporcionais entram no Power Ranking dos times.
+      </div>
+    </section>
+  );
+}
+
+/* ========== Ranking de goleiros ========== */
+function GoalkeeperRankingSection({ state, rows, openTeam }) {
+  const withData = rows.filter((r) => (r.saves || 0) > 0 || r.ratingCount > 0);
+  if (withData.length === 0) return null;
+
+  return (
+    <section>
+      <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
+        <span className="text-sm">🧤</span> Melhores goleiros
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({withData.length})</span>
+      </h2>
+      <Card className="p-3">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-slate-500">
+              <tr className="border-b border-slate-800">
+                <th className="text-left pb-1.5 pr-2 w-8">#</th>
+                <th className="text-left pb-1.5 pr-2">Jogador</th>
+                <th className="text-left pb-1.5 pr-2">Time</th>
+                <th className="text-center pb-1.5 px-1" title="Defesas">🧤</th>
+                <th className="text-center pb-1.5 px-1" title="Gols sofridos pelo time">GC time</th>
+                <th className="text-center pb-1.5 px-1" title="Partidas com nota">Jogos</th>
+                <th className="text-center pb-1.5 px-1" title="Média das notas">⭐</th>
+                <th className="text-right pb-1.5 pl-2" title="Score do goleiro">Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withData.map((p, i) => (
+                <tr key={`${p.teamId}|${p.playerName}`} className={cls(
+                  'border-b border-slate-800/40',
+                  i === 0 && 'bg-amber-950/20',
+                )}>
+                  <td className="py-1.5 pr-2 tabular-nums font-bold">
+                    <span className={cls(i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+                  </td>
+                  <td className="py-1.5 pr-2 font-bold">
+                    {p.playerName}
+                    {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 inline ml-1" />}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {openTeam ? (
+                      <button onClick={() => openTeam(p.teamId)} className="hover:text-lime-300 transition text-left">
+                        <span className="mr-1">{p.teamFlag}</span>{p.teamName}
+                      </button>
+                    ) : (<><span className="mr-1">{p.teamFlag}</span>{p.teamName}</>)}
+                  </td>
+                  <td className="py-1.5 px-1 text-center tabular-nums font-bold text-yellow-300">{p.saves || 0}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.goalsAgainst}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.matchesPlayed || 0}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums font-bold">
+                    {p.avg > 0 ? p.avg.toFixed(2) : '—'}
+                  </td>
+                  <td className="py-1.5 pl-2 text-right tabular-nums font-mono font-black text-lime-300">
+                    {p.gkScore.toFixed(1)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </section>
   );
 }
