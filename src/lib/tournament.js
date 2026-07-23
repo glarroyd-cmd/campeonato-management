@@ -1102,10 +1102,11 @@ export function propagateKnockoutWinners(matches) {
       outcomes.set(`${stage}|${idx}`, out);
     }
   }
-  /* Preencher feeds */
   let changed = false;
   for (const m of newMatches) {
     if (m.isExtra) continue;
+    /* Respeita swaps manuais: matches marcados como override não são sobrescritos */
+    if (m.manuallyOverridden) continue;
     const feedHome = m.feedHome;
     const feedAway = m.feedAway;
     if (!feedHome && !feedAway) continue;
@@ -1261,7 +1262,7 @@ export function computePlayerStats(state) {
         teamName: team?.name || '',
         teamFlag: team?.flag || '',
         owner: team?.owner || null,
-        goals: 0, assists: 0, yellows: 0, reds: 0,
+        goals: 0, assists: 0, yellows: 0, reds: 0, saves: 0,
         ratingSum: 0, ratingCount: 0,
         matchesPlayed: 0,
       });
@@ -1282,6 +1283,7 @@ export function computePlayerStats(state) {
       else if (ev.type === 'assist') stat.assists++;
       else if (ev.type === 'yellow') stat.yellows++;
       else if (ev.type === 'red') stat.reds++;
+      else if (ev.type === 'save') stat.saves++;
     }
     /* Ratings: MÉDIA entre nota do main e nota da prorrogação (por jogador).
        Conta como 1 partida só. */
@@ -1299,8 +1301,107 @@ export function computePlayerStats(state) {
 }
 
 /* ============================================================
-   MELHORES 3ºs LUGARES (pra Copa 2026 e Eurocopa)
+   MÉTRICAS AVANÇADAS DE TIME
+   Posse de bola, finalizações e Expected Goals (xG) — por confronto.
+   Suporta preenchimento parcial (só nos jogos onde o usuário quis).
    ============================================================ */
+export function computeTeamMetrics(state) {
+  const map = new Map();
+  const ensure = (teamId) => {
+    if (!map.has(teamId)) {
+      const team = getTeamById(state, teamId);
+      map.set(teamId, {
+        teamId,
+        name: team?.name || '',
+        flag: team?.flag || '',
+        owner: team?.owner || null,
+        possessionSum: 0, possessionCount: 0,
+        shotsSum: 0, shotsCount: 0,
+        xGSum: 0, xGCount: 0,
+        goals: 0, // gols nos mesmos jogos onde tem xG registrado (pra comparação)
+      });
+    }
+    return map.get(teamId);
+  };
+
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    if (!mainMatch.homeTeamId || !mainMatch.awayTeamId) continue;
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    /* teamStats do main match (não tem no extra) */
+    const ts = mainMatch.teamStats || {};
+    const homeTs = ts[mainMatch.homeTeamId];
+    const awayTs = ts[mainMatch.awayTeamId];
+
+    const h = ensure(mainMatch.homeTeamId);
+    const a = ensure(mainMatch.awayTeamId);
+
+    if (homeTs) {
+      if (homeTs.possession != null && homeTs.possession !== '') {
+        const p = parseFloat(homeTs.possession);
+        if (!isNaN(p)) { h.possessionSum += p; h.possessionCount++; }
+      }
+      if (homeTs.shots != null && homeTs.shots !== '') {
+        const s = parseInt(homeTs.shots, 10);
+        if (!isNaN(s)) { h.shotsSum += s; h.shotsCount++; }
+      }
+      if (homeTs.xG != null && homeTs.xG !== '') {
+        const x = parseFloat(homeTs.xG);
+        if (!isNaN(x)) { h.xGSum += x; h.xGCount++; h.goals += consolidated.homeScore; }
+      }
+    }
+    if (awayTs) {
+      if (awayTs.possession != null && awayTs.possession !== '') {
+        const p = parseFloat(awayTs.possession);
+        if (!isNaN(p)) { a.possessionSum += p; a.possessionCount++; }
+      }
+      if (awayTs.shots != null && awayTs.shots !== '') {
+        const s = parseInt(awayTs.shots, 10);
+        if (!isNaN(s)) { a.shotsSum += s; a.shotsCount++; }
+      }
+      if (awayTs.xG != null && awayTs.xG !== '') {
+        const x = parseFloat(awayTs.xG);
+        if (!isNaN(x)) { a.xGSum += x; a.xGCount++; a.goals += consolidated.awayScore; }
+      }
+    }
+  }
+
+  const rows = [...map.values()].map((r) => ({
+    ...r,
+    possessionAvg: r.possessionCount > 0 ? r.possessionSum / r.possessionCount : null,
+    shotsAvg: r.shotsCount > 0 ? r.shotsSum / r.shotsCount : null,
+    xGAvg: r.xGCount > 0 ? r.xGSum / r.xGCount : null,
+    xGDiff: r.xGCount > 0 ? r.goals - r.xGSum : null, // + = overperformer, - = underperformer
+    conversionRate: (r.shotsSum > 0 && r.shotsCount > 0) ? (r.goals / r.shotsSum) * 100 : null,
+  }));
+  return rows;
+}
+
+/* ============================================================
+   RANKING DE GOLEIROS (por defesas + notas)
+   ============================================================ */
+export function computeGoalkeeperRankings(state) {
+  const players = computePlayerStats(state);
+  const goalkeepers = players.filter((p) => {
+    const pos = getPlayerPosition(state, p.teamId, p.playerName);
+    return pos === 'GOL';
+  });
+  /* Anexa gols sofridos pelo time (aproximação de "gols contra o goleiro") */
+  const teamGoalsAgainst = {};
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    if (mainMatch.homeTeamId) teamGoalsAgainst[mainMatch.homeTeamId] = (teamGoalsAgainst[mainMatch.homeTeamId] || 0) + consolidated.awayScore;
+    if (mainMatch.awayTeamId) teamGoalsAgainst[mainMatch.awayTeamId] = (teamGoalsAgainst[mainMatch.awayTeamId] || 0) + consolidated.homeScore;
+  }
+  return goalkeepers.map((p) => {
+    const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+    const goalsAgainst = teamGoalsAgainst[p.teamId] || 0;
+    /* Score: defesas × 3 + média × 8 - gols sofridos * 0.5 + bonus por partidas */
+    const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + Math.log2((p.matchesPlayed || 0) + 1) * 2;
+    return { ...p, avg, goalsAgainst, gkScore: score };
+  }).sort((a, b) => b.gkScore - a.gkScore);
+}
 export function computeBestThirds(state) {
   const format = getFormat(state.formatId);
   if (!format.hasGroups || !format.bestThirds || format.bestThirds === 0) return [];
@@ -1418,7 +1519,7 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
   let coreScore;
   switch (position) {
     case 'GOL':
-      coreScore = (avg * 12) + (s.assists * 1.5);
+      coreScore = (avg * 12) + (s.assists * 1.5) + ((s.saves || 0) * 2);
       break;
     case 'ZAG':
       coreScore = (avg * 9) + (s.goals * 3) + (s.assists * 1.5);
@@ -1648,6 +1749,8 @@ export function getChampionPath(state) {
    ============================================================ */
 export function computePowerRankingTeams(state) {
   const teamStats = computeTeamStats(state);
+  const teamMetrics = computeTeamMetrics(state);
+  const metricsByTeam = Object.fromEntries(teamMetrics.map((m) => [m.teamId, m]));
   /* Identifica a fase máxima atingida por cada time no mata-mata */
   const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
   const maxStageByTeam = {};
@@ -1665,14 +1768,29 @@ export function computePowerRankingTeams(state) {
       const winPct = t.P > 0 ? t.Pts / (t.P * 3) : 0;
       const stageBonus = (maxStageByTeam[t.teamId] ?? 0) * 4;
       const isChampion = champ?.id === t.teamId;
+      /* Métricas avançadas (podem ser null se não coletadas) */
+      const metrics = metricsByTeam[t.teamId];
+      /* Bônus por posse (média centrada em 50, cada ponto acima vale 0.1)
+         Bônus por finalizações (média × 0.15)
+         Bônus por xG (soma × 0.5, mas penaliza se converteu muito abaixo — xGDiff negativo grande) */
+      const possessionBonus = metrics?.possessionAvg != null ? (metrics.possessionAvg - 50) * 0.15 : 0;
+      const shotsBonus = metrics?.shotsAvg != null ? metrics.shotsAvg * 0.2 : 0;
+      const xGBonus = metrics?.xGAvg != null ? metrics.xGAvg * 2 : 0;
       /* Score combina:
          - Aproveitamento (peso 30)
          - Saldo de gols (peso 1.5)
          - Gols pró (peso 0.5) → desempate quando saldo é igual
          - Bônus por fase atingida no mata-mata
-         - Bônus por ser campeão */
-      const score = (winPct * 30) + (t.SG * 1.5) + (t.GP * 0.5) + stageBonus + (isChampion ? 10 : 0);
-      return { ...t, stageReached: maxStageByTeam[t.teamId] ?? 0, isChampion, powerScore: score };
+         - Bônus por ser campeão
+         - Métricas avançadas quando disponíveis */
+      const score = (winPct * 30) + (t.SG * 1.5) + (t.GP * 0.5) + stageBonus + (isChampion ? 10 : 0) + possessionBonus + shotsBonus + xGBonus;
+      return {
+        ...t,
+        stageReached: maxStageByTeam[t.teamId] ?? 0,
+        isChampion,
+        powerScore: score,
+        metrics,
+      };
     })
     .sort((a, b) => b.powerScore - a.powerScore);
 }
@@ -1695,16 +1813,18 @@ export function computePowerRankingPlayers(state) {
   }
   const champ = getChampion(state);
   return playerStats
-    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0)
+    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
       const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
       const stageBonus = (maxStageByTeam[s.teamId] ?? 0) * 3;
       const isChampionTeam = champ?.id === s.teamId;
       const cardPenalty = (s.yellows * 1) + (s.reds * 4);
+      const savesBonus = (s.saves || 0) * 1.5; // defesas contribuem (importante pra goleiros)
       const score =
         (avg * 6) +
         (s.goals * 4) +
         (s.assists * 2) +
+        savesBonus +
         stageBonus +
         (isChampionTeam ? 6 : 0) +
         Math.log2(s.ratingCount + 1) * 2 -
@@ -2491,6 +2611,7 @@ export function computeBestXIForRound(state, roundKey) {
       else if (ev.type === 'assist') playerMap[k].assists++;
       else if (ev.type === 'yellow') playerMap[k].yellows++;
       else if (ev.type === 'red') playerMap[k].reds++;
+      else if (ev.type === 'save') { playerMap[k].saves = (playerMap[k].saves || 0) + 1; }
     }
     /* Ratings: média entre main e prorrogação (1 nota por jogador POR jogo) */
     const ratings = getConsolidatedRatings(state, mainMatch);
@@ -2517,7 +2638,7 @@ export function computeBestXIForRound(state, roundKey) {
       const matchesBonus = Math.log2(p.ratingCount + 1) * 1.5;
       let core;
       switch (position) {
-        case 'GOL': core = avg * 12 + p.assists * 1.5; break;
+        case 'GOL': core = avg * 12 + p.assists * 1.5 + ((p.saves || 0) * 2); break;
         case 'ZAG': core = avg * 9 + p.goals * 3 + p.assists * 1.5; break;
         case 'LAT': core = avg * 8 + p.goals * 3.5 + p.assists * 2.5; break;
         case 'MEI': core = avg * 7 + p.goals * 3.5 + p.assists * 3.5; break;
