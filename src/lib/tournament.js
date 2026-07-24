@@ -1428,6 +1428,64 @@ export function computeTeamMetrics(state) {
   return rows;
 }
 
+/* Agrega as mesmas métricas por usuário/dono, ponderando as médias pelo
+   número de jogos em que cada dado foi efetivamente preenchido. */
+export function computeOwnerMetrics(state) {
+  const owners = {
+    p1: {
+      owner: 'p1', name: state.player1Name || 'Jogador 1', teamsWithData: 0,
+      possessionSum: 0, possessionCount: 0,
+      shotsSum: 0, shotsCount: 0,
+      xGSum: 0, xGCount: 0, goals: 0,
+    },
+    p2: {
+      owner: 'p2', name: state.player2Name || 'Jogador 2', teamsWithData: 0,
+      possessionSum: 0, possessionCount: 0,
+      shotsSum: 0, shotsCount: 0,
+      xGSum: 0, xGCount: 0, goals: 0,
+    },
+  };
+
+  for (const row of computeTeamMetrics(state)) {
+    const target = owners[row.owner];
+    if (!target) continue;
+    const hasData = row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0;
+    if (hasData) target.teamsWithData++;
+    target.possessionSum += row.possessionSum;
+    target.possessionCount += row.possessionCount;
+    target.shotsSum += row.shotsSum;
+    target.shotsCount += row.shotsCount;
+    target.xGSum += row.xGSum;
+    target.xGCount += row.xGCount;
+    target.goals += row.goals;
+  }
+
+  return Object.values(owners).map((row) => ({
+    ...row,
+    possessionAvg: row.possessionCount > 0 ? row.possessionSum / row.possessionCount : null,
+    shotsAvg: row.shotsCount > 0 ? row.shotsSum / row.shotsCount : null,
+    xGAvg: row.xGCount > 0 ? row.xGSum / row.xGCount : null,
+    xGDiff: row.xGCount > 0 ? row.goals - row.xGSum : null,
+  }));
+}
+
+function computeGoalsAgainstByTeam(state) {
+  const teamGoalsAgainst = {};
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    if (mainMatch.homeTeamId) {
+      teamGoalsAgainst[mainMatch.homeTeamId] =
+        (teamGoalsAgainst[mainMatch.homeTeamId] || 0) + consolidated.awayScore;
+    }
+    if (mainMatch.awayTeamId) {
+      teamGoalsAgainst[mainMatch.awayTeamId] =
+        (teamGoalsAgainst[mainMatch.awayTeamId] || 0) + consolidated.homeScore;
+    }
+  }
+  return teamGoalsAgainst;
+}
+
 /* ============================================================
    RANKING DE GOLEIROS (por defesas + notas)
    ============================================================ */
@@ -1437,18 +1495,11 @@ export function computeGoalkeeperRankings(state) {
     const pos = getPlayerPosition(state, p.teamId, p.playerName);
     return pos === 'GOL';
   });
-  /* Anexa gols sofridos pelo time (aproximação de "gols contra o goleiro") */
-  const teamGoalsAgainst = {};
-  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
-  for (const mainMatch of mainMatches) {
-    const consolidated = getConsolidatedMatch(state, mainMatch);
-    if (mainMatch.homeTeamId) teamGoalsAgainst[mainMatch.homeTeamId] = (teamGoalsAgainst[mainMatch.homeTeamId] || 0) + consolidated.awayScore;
-    if (mainMatch.awayTeamId) teamGoalsAgainst[mainMatch.awayTeamId] = (teamGoalsAgainst[mainMatch.awayTeamId] || 0) + consolidated.homeScore;
-  }
+  const teamGoalsAgainst = computeGoalsAgainstByTeam(state);
   return goalkeepers.map((p) => {
     const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
     const goalsAgainst = teamGoalsAgainst[p.teamId] || 0;
-    /* Score: defesas × 3 + média × 8 - gols sofridos * 0.5 + bonus por partidas */
+    /* Score: defesas × 3 + média × 8 - gols sofridos × 0,5 + bônus por partidas. */
     const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + Math.log2((p.matchesPlayed || 0) + 1) * 2;
     return { ...p, avg, goalsAgainst, gkScore: score };
   }).sort((a, b) => b.gkScore - a.gkScore);
@@ -1567,11 +1618,18 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
   const matchesBonus = Math.log2(s.ratingCount + 1) * 2;
   const cardPenalty = (s.yellows * 1) + (s.reds * 4);
   const avg = s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
+
+  /* Para goleiros, usa exatamente os critérios antes exibidos no ranking
+     separado: defesas, média, gols sofridos pelo time e partidas. */
+  if (position === 'GOL') {
+    return (s.saves || 0) * 3
+      + avg * 8
+      - (s.goalsAgainst || 0) * 0.5
+      + Math.log2((s.matchesPlayed || 0) + 1) * 2;
+  }
+
   let coreScore;
   switch (position) {
-    case 'GOL':
-      coreScore = (avg * 12) + (s.assists * 1.5) + ((s.saves || 0) * 2);
-      break;
     case 'ZAG':
       coreScore = (avg * 9) + (s.goals * 3) + (s.assists * 1.5);
       break;
@@ -1593,6 +1651,7 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
 /* Computes player stats with position info and position-adjusted score */
 export function computePlayersWithPosition(state) {
   const stats = computePlayerStats(state);
+  const goalsAgainstByTeam = computeGoalsAgainstByTeam(state);
   const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
   const maxStageByTeam = {};
   for (const m of state.matches) {
@@ -1604,16 +1663,17 @@ export function computePlayersWithPosition(state) {
   }
   const champ = getChampion(state);
   return stats
-    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0)
+    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
       const position = getPlayerPosition(state, s.teamId, s.playerName);
       const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const goalsAgainst = goalsAgainstByTeam[s.teamId] || 0;
       const stageReached = maxStageByTeam[s.teamId] ?? 0;
       const isChampionTeam = champ?.id === s.teamId;
       const posScore = position
-        ? getPositionAdjustedScore({ ...s, avg }, position, stageReached, isChampionTeam)
+        ? getPositionAdjustedScore({ ...s, avg, goalsAgainst }, position, stageReached, isChampionTeam)
         : null;
-      return { ...s, avg, position, stageReached, isChampionTeam, posScore };
+      return { ...s, avg, goalsAgainst, position, stageReached, isChampionTeam, posScore };
     });
 }
 
