@@ -10,6 +10,9 @@ import {
   getSameOwnerKnockoutSwapOptions,
   propagateKnockoutWinners,
   R32_PATTERN_WC2026,
+  computeOwnerMetrics,
+  computePlayersByPosition,
+  computeGoalkeeperRankings,
 } from '../src/lib/tournament.js';
 import {
   getWc2026ThirdPlaceAssignments,
@@ -346,4 +349,86 @@ test('o vencedor de um confronto customizado continua avançando normalmente', (
   const final = state.matches.find((match) => match.stage === 'final');
 
   assert.deepEqual([final.homeTeamId, final.awayTeamId], semifinalWinners);
+});
+
+
+test('estatísticas avançadas são agregadas por usuário sem misturar dados ausentes', () => {
+  const state = makeInitialState('ko8');
+  state.player1Name = 'Ana';
+  state.player2Name = 'Bruno';
+  state.koTeams = state.koTeams.map((team, index) => ({
+    ...team,
+    owner: index === 0 ? 'p1' : index === 1 ? 'p2' : team.owner,
+  }));
+  state.matches = [{
+    id: 'advanced-1',
+    stage: 'qf',
+    koIndex: 0,
+    leg: 1,
+    played: true,
+    autoPlayed: false,
+    isExtra: false,
+    homeTeamId: 'KO1',
+    awayTeamId: 'KO2',
+    homeScore: 2,
+    awayScore: 1,
+    events: [],
+    ratings: {},
+    teamStats: {
+      KO1: { possession: '58', shots: '14', xG: '1.75' },
+      KO2: { possession: '42', shots: '7', xG: '0.80' },
+    },
+  }];
+
+  const rows = computeOwnerMetrics(state);
+  const p1 = rows.find((row) => row.owner === 'p1');
+  const p2 = rows.find((row) => row.owner === 'p2');
+
+  assert.equal(p1.name, 'Ana');
+  assert.equal(p1.possessionAvg, 58);
+  assert.equal(p1.shotsSum, 14);
+  assert.equal(p1.xGSum, 1.75);
+  assert.equal(p1.xGDiff, 0.25);
+  assert.equal(p2.name, 'Bruno');
+  assert.equal(p2.possessionAvg, 42);
+  assert.equal(p2.shotsAvg, 7);
+  assert.ok(Math.abs(p2.xGDiff - 0.2) < 1e-9);
+});
+
+test('o quadro de goleiros em melhores por posição usa o score completo do antigo ranking', () => {
+  const state = makeInitialState('ko8');
+  state.koTeams = state.koTeams.map((team, index) => ({
+    ...team,
+    owner: index === 0 ? 'p1' : index === 1 ? 'p2' : team.owner,
+  }));
+  state.playerPositions = { 'KO1|Goleiro A': 'GOL' };
+  state.matches = [{
+    id: 'gk-1',
+    stage: 'qf',
+    koIndex: 0,
+    leg: 1,
+    played: true,
+    autoPlayed: false,
+    isExtra: false,
+    homeTeamId: 'KO1',
+    awayTeamId: 'KO2',
+    homeScore: 2,
+    awayScore: 1,
+    events: [
+      { id: 's1', teamId: 'KO1', type: 'save', playerName: 'Goleiro A' },
+      { id: 's2', teamId: 'KO1', type: 'save', playerName: 'Goleiro A' },
+      { id: 's3', teamId: 'KO1', type: 'save', playerName: 'Goleiro A' },
+      { id: 's4', teamId: 'KO1', type: 'save', playerName: 'Goleiro A' },
+    ],
+    ratings: { KO1: { 'Goleiro A': '7.5' } },
+    teamStats: {},
+  }];
+
+  const positionRow = computePlayersByPosition(state, 'GOL', 10)[0];
+  const oldRankingRow = computeGoalkeeperRankings(state)[0];
+
+  assert.equal(positionRow.goalsAgainst, 1);
+  assert.equal(positionRow.saves, 4);
+  assert.equal(positionRow.posScore, oldRankingRow.gkScore);
+  assert.equal(positionRow.posScore, 73.5);
 });
