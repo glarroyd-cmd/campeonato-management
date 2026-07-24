@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   Trophy, Users, Calendar, BarChart3, ChevronRight, ChevronLeft,
   Edit2, Check, X, Plus, AlertTriangle, Award, Target, Camera,
-  Loader2, ArrowLeftRight, Star, RefreshCw,
+  Loader2, ArrowLeftRight, Star,
   Goal, Hand, FileText, ArrowRight, ChevronDown, ChevronUp,
   Link2, LogOut, Copy, Home as HomeIcon, ArrowUp, ArrowDown,
   Settings2, Shuffle, Crown, Clock, Zap,
@@ -28,7 +28,7 @@ import {
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
   computeGroupTeamsOverview, computeAllSuspended,
-  computeTeamMetrics, computeGoalkeeperRankings,
+  computeTeamMetrics, computeOwnerMetrics,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
   reshuffleSameOwnerKnockout, getSameOwnerKnockoutSwapOptions,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
@@ -536,7 +536,7 @@ export default function App() {
   const allTeams = getAllTeams(state);
 
   /* Garante que view esteja numa tab válida depois do wizard */
-  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats', 'team'];
+  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats', 'advanced-stats', 'team'];
   const safeView = validTabs.includes(view) ? view : 'groups';
 
   return (
@@ -551,6 +551,7 @@ export default function App() {
         )}
         {safeView === 'knockout' && <KnockoutView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
         {safeView === 'stats'    && <StatsView state={state} allTeams={allTeams} openTeam={openTeam} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
+        {safeView === 'advanced-stats' && <AdvancedStatsView state={state} openTeam={openTeam} />}
         {safeView === 'team' && activeTeamId && (
           <TeamDetailView state={state} teamId={activeTeamId} onBack={() => setView('groups')} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />
         )}
@@ -864,8 +865,9 @@ function Header({ state, view, setView, code, onLeave }) {
   const tabs = [
     { id: 'groups',   label: 'Grupos',       icon: Users    },
     { id: 'matches',  label: 'Jogos',        icon: Calendar },
-    { id: 'knockout', label: 'Mata-Mata',    icon: Trophy   },
-    { id: 'stats',    label: 'Estatísticas', icon: BarChart3 },
+    { id: 'knockout',      label: 'Mata-Mata',    icon: Trophy   },
+    { id: 'stats',         label: 'Estatísticas', icon: BarChart3 },
+    { id: 'advanced-stats', label: 'Avançadas',   icon: Target    },
   ];
   const format = getFormat(state.formatId);
   if (!format.hasGroups) {
@@ -3208,26 +3210,6 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     cancelBracketEdits();
   }, [state, updateMatches, cancelBracketEdits]);
 
-  /* Conta slots confirmados que deixaram de seguir automaticamente a origem. */
-  const manualSwapCount = useMemo(() => (
-    koMatches.filter((m) => m.manuallyOverridden && !m.played && !m.isExtra).length
-  ), [koMatches]);
-
-  const handleRestorePropagate = useCallback(() => {
-    if (!window.confirm(`Restaurar a propagação automática dos ${manualSwapCount} slot(s) customizado(s)?`)) return;
-    const newMatches = state.matches.map((match) => {
-      if (match.stage === 'group' || match.isExtra || match.played || !match.manuallyOverridden) return match;
-      /* Fases alimentadas por vencedores voltam a ficar vazias e serão
-         preenchidas pela propagação. Na primeira fase, preservamos os times;
-         se o mata-mata ainda não começou, o seeding oficial poderá restaurá-los. */
-      if (match.feedHome || match.feedAway) {
-        return { ...match, manuallyOverridden: false, homeTeamId: null, awayTeamId: null };
-      }
-      return { ...match, manuallyOverridden: false };
-    });
-    updateMatches(newMatches);
-  }, [state, updateMatches, manualSwapCount]);
-
   const bracketHasHoles = useMemo(() => {
     const firstStage = mainStages[0];
     if (!firstStage) return false;
@@ -3306,21 +3288,7 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
         </div>
       )}
 
-      {manualSwapCount > 0 && !swapTeam && !hasPendingBracketEdits && (
-        <div className="flex items-center justify-between gap-3 p-2.5 bg-blue-950/20 border border-blue-700/30 rounded-lg text-xs">
-          <div className="flex items-center gap-2 text-blue-200">
-            <ArrowLeftRight className="w-3.5 h-3.5" />
-            {manualSwapCount} slot{manualSwapCount > 1 ? 's' : ''} com caminho customizado e confirmado.
-            Os vencedores desses confrontos continuam avançando normalmente.
-          </div>
-          <button
-            onClick={handleRestorePropagate}
-            className="font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-blue-700 text-blue-50 hover:bg-blue-600 transition flex items-center gap-1"
-          >
-            Restaurar propagação
-          </button>
-        </div>
-      )}
+
 
       {swapTeam ? (
         <div className="flex items-center justify-between gap-3 p-3 bg-blue-900/30 border border-blue-700/60 rounded-lg text-sm">
@@ -3594,8 +3562,6 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
   const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
   const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
   const suspended     = useMemo(() => computeAllSuspended(state),        [state.matches, state.teamRosters, state.rules]);
-  const teamMetrics   = useMemo(() => computeTeamMetrics(state),         [state.matches]);
-  const goalkeepers   = useMemo(() => computeGoalkeeperRankings(state),  [state.matches, state.playerPositions]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
@@ -3705,16 +3671,6 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
 
       {/* Estatísticas de equipes */}
       <TeamRankingsSection state={state} openTeam={openTeam} />
-
-      {/* Métricas avançadas de times */}
-      {teamMetrics.some((t) => t.possessionCount > 0 || t.shotsCount > 0 || t.xGCount > 0) && (
-        <AdvancedTeamMetricsSection state={state} rows={teamMetrics} openTeam={openTeam} />
-      )}
-
-      {/* Ranking de goleiros */}
-      {goalkeepers.length > 0 && (
-        <GoalkeeperRankingSection state={state} rows={goalkeepers} openTeam={openTeam} />
-      )}
 
       {/* Recordes */}
       {records && <RecordsCard state={state} records={records} />}
@@ -4201,11 +4157,24 @@ function PositionRanking({ posDef, list, state }) {
                 </div>
                 <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
                   p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-                <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[80px] justify-end">
-                  {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
-                  {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
+                <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[110px] justify-end">
+                  {posDef.id === 'GOL' ? (
+                    <>
+                      <span className="tabular-nums text-yellow-300" title="Defesas">🧤 {p.saves || 0}</span>
+                      <span className="tabular-nums" title="Gols sofridos pelo time">GC {p.goalsAgainst || 0}</span>
+                      {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
+                    </>
+                  ) : (
+                    <>
+                      {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
+                      {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
+                    </>
+                  )}
                 </div>
-                <div className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right">
+                <div
+                  className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right"
+                  title={posDef.id === 'GOL' ? 'Score: defesas, média, gols sofridos e partidas' : 'Score por posição'}
+                >
                   {p.posScore.toFixed(1)}
                 </div>
               </div>
@@ -4647,152 +4616,211 @@ function TeamRankingsSection({ state, openTeam }) {
   );
 }
 
-/* ========== Métricas avançadas de times (posse, finalizações, xG) ========== */
-function AdvancedTeamMetricsSection({ state, rows, openTeam }) {
-  const withPossession = [...rows].filter((r) => r.possessionAvg != null).sort((a, b) => b.possessionAvg - a.possessionAvg);
-  const withShots      = [...rows].filter((r) => r.shotsAvg != null).sort((a, b) => b.shotsSum - a.shotsSum);
-  const withXG         = [...rows].filter((r) => r.xGAvg != null).sort((a, b) => b.xGSum - a.xGSum);
-  const overperformers = [...rows]
-    .filter((r) => r.xGDiff != null && r.xGCount >= 1)
-    .sort((a, b) => b.xGDiff - a.xGDiff);
+/* ========== ABA DE ESTATÍSTICAS AVANÇADAS ========== */
+function AdvancedStatsView({ state, openTeam }) {
+  const teamMetrics = useMemo(
+    () => computeTeamMetrics(state),
+    [state.matches, state.groups, state.koTeams],
+  );
+  const ownerMetrics = useMemo(
+    () => computeOwnerMetrics(state),
+    [state.matches, state.groups, state.koTeams, state.player1Name, state.player2Name],
+  );
+  const rowsWithData = useMemo(() => (
+    teamMetrics
+      .filter((row) => row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0)
+      .sort((a, b) => {
+        const aCount = a.possessionCount + a.shotsCount + a.xGCount;
+        const bCount = b.possessionCount + b.shotsCount + b.xGCount;
+        return bCount - aCount || b.xGSum - a.xGSum || a.name.localeCompare(b.name, 'pt-BR');
+      })
+  ), [teamMetrics]);
 
+  const hasData = rowsWithData.length > 0;
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-5 border-lime-700/40 bg-gradient-to-br from-lime-950/25 to-slate-950">
+        <div className="flex items-start gap-3">
+          <Target className="w-7 h-7 text-lime-400 flex-shrink-0" />
+          <div>
+            <h1 className="text-xl font-black">Estatísticas avançadas</h1>
+            <p className="text-sm text-slate-400 mt-1">
+              Posse de bola, finalizações e xG consolidados por usuário e por time.
+              As médias consideram apenas os jogos em que cada métrica foi preenchida.
+            </p>
+          </div>
+        </div>
+      </Card>
+
+      {!hasData ? (
+        <Card className="p-8 text-center">
+          <BarChart3 className="w-9 h-9 text-slate-600 mx-auto mb-3" />
+          <h2 className="font-bold text-slate-300">Nenhuma estatística avançada preenchida</h2>
+          <p className="text-sm text-slate-500 mt-2 max-w-xl mx-auto">
+            Abra um jogo e preencha posse, finalizações e xG no quadro de cada time.
+            Assim que um jogo com esses dados for concluído, os comparativos aparecem aqui.
+          </p>
+        </Card>
+      ) : (
+        <>
+          <AdvancedOwnerMetricsSection state={state} rows={ownerMetrics} />
+          <AdvancedTeamMetricsTable state={state} rows={rowsWithData} openTeam={openTeam} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdvancedOwnerMetricsSection({ state, rows }) {
   return (
     <section>
       <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-        <BarChart3 className="w-4 h-4" /> Estatísticas avançadas
-        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">— posse, finalizações, xG</span>
+        <Users className="w-4 h-4" /> Por usuário
       </h2>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {withPossession.length > 0 && (
-          <TeamRankList
-            title="Mais posse de bola"
-            icon={<span className="text-sm">⚽</span>}
-            list={withPossession.slice(0, 8)}
-            state={state} openTeam={openTeam}
-            render={(t) => (
-              <span className="text-xs">
-                <span className="font-bold tabular-nums">{t.possessionAvg.toFixed(1)}%</span>
-                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.possessionCount}j)</span>
-              </span>
-            )}
-          />
-        )}
-        {withShots.length > 0 && (
-          <TeamRankList
-            title="Mais finalizações"
-            icon={<span className="text-sm">🎯</span>}
-            list={withShots.slice(0, 8)}
-            state={state} openTeam={openTeam}
-            render={(t) => (
-              <span className="text-xs">
-                <span className="font-bold tabular-nums">{t.shotsSum}</span>
-                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.shotsAvg.toFixed(1)}/j)</span>
-              </span>
-            )}
-          />
-        )}
-        {withXG.length > 0 && (
-          <TeamRankList
-            title="Mais xG (perigo criado)"
-            icon={<span className="text-sm">📈</span>}
-            list={withXG.slice(0, 8)}
-            state={state} openTeam={openTeam}
-            render={(t) => (
-              <span className="text-xs">
-                <span className="font-bold tabular-nums">{t.xGSum.toFixed(2)}</span>
-                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.xGAvg.toFixed(2)}/j)</span>
-              </span>
-            )}
-          />
-        )}
-        {overperformers.length > 0 && (
-          <TeamRankList
-            title="Gols vs xG"
-            icon={<span className="text-sm">⚡</span>}
-            list={overperformers.slice(0, 8)}
-            state={state} openTeam={openTeam}
-            render={(t) => {
-              const diff = t.xGDiff;
-              const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-red-400' : 'text-slate-300';
-              const label = diff > 0.5 ? 'acima' : diff < -0.5 ? 'abaixo' : 'no esperado';
-              return (
-                <span className="text-xs">
-                  <span className={cls('font-bold tabular-nums', color)}>
-                    {diff > 0 ? '+' : ''}{diff.toFixed(2)}
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-normal ml-1">{label}</span>
-                </span>
-              );
-            }}
-          />
-        )}
-      </div>
-      <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
-        Dados coletados apenas nos jogos onde as métricas foram preenchidas. Bônus proporcionais entram no Power Ranking dos times.
+        {rows.map((row) => {
+          const color = row.owner === 'p1'
+            ? (state.player1Color || '#06b6d4')
+            : (state.player2Color || '#f59e0b');
+          const hasData = row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0;
+          return (
+            <Card
+              key={row.owner}
+              className="p-4"
+              style={{ backgroundColor: `${color}12`, borderColor: `${color}55` }}
+            >
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="font-black text-lg" style={{ color }}>{row.name}</div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">
+                  {row.teamsWithData} time{row.teamsWithData === 1 ? '' : 's'} com dados
+                </div>
+              </div>
+              {!hasData ? (
+                <div className="text-xs text-slate-500 italic">Sem métricas preenchidas.</div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <AdvancedMetricCell
+                    label="Posse média"
+                    value={row.possessionAvg == null ? '—' : `${row.possessionAvg.toFixed(1)}%`}
+                    detail={row.possessionCount > 0 ? `${row.possessionCount} atuações` : 'sem dados'}
+                  />
+                  <AdvancedMetricCell
+                    label="Finalizações"
+                    value={row.shotsCount > 0 ? row.shotsSum : '—'}
+                    detail={row.shotsAvg == null ? 'sem dados' : `${row.shotsAvg.toFixed(1)} por jogo`}
+                  />
+                  <AdvancedMetricCell
+                    label="xG"
+                    value={row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}
+                    detail={row.xGAvg == null ? 'sem dados' : `${row.xGAvg.toFixed(2)} por jogo`}
+                  />
+                  <AdvancedMetricCell
+                    label="Gols − xG"
+                    value={row.xGDiff == null ? '—' : `${row.xGDiff > 0 ? '+' : ''}${row.xGDiff.toFixed(2)}`}
+                    detail={row.xGCount > 0 ? `${row.goals} gols nos jogos com xG` : 'sem dados'}
+                    tone={row.xGDiff == null ? null : row.xGDiff > 0.5 ? 'positive' : row.xGDiff < -0.5 ? 'negative' : null}
+                  />
+                </div>
+              )}
+            </Card>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-/* ========== Ranking de goleiros ========== */
-function GoalkeeperRankingSection({ state, rows, openTeam }) {
-  const withData = rows.filter((r) => (r.saves || 0) > 0 || r.ratingCount > 0);
-  if (withData.length === 0) return null;
+function AdvancedMetricCell({ label, value, detail, tone }) {
+  const valueClass = tone === 'positive'
+    ? 'text-emerald-400'
+    : tone === 'negative'
+      ? 'text-red-400'
+      : 'text-slate-100';
+  return (
+    <div className="rounded-lg border border-slate-800/70 bg-slate-950/35 p-2.5 min-w-0">
+      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold truncate">{label}</div>
+      <div className={cls('text-lg font-black tabular-nums mt-0.5', valueClass)}>{value}</div>
+      <div className="text-[9px] text-slate-600 mt-0.5 leading-tight">{detail}</div>
+    </div>
+  );
+}
 
+function AdvancedTeamMetricsTable({ state, rows, openTeam }) {
   return (
     <section>
       <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-        <span className="text-sm">🧤</span> Melhores goleiros
-        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({withData.length})</span>
+        <Trophy className="w-4 h-4" /> Por time
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({rows.length} com dados)</span>
       </h2>
       <Card className="p-3">
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full min-w-[860px] text-xs">
             <thead className="text-slate-500">
               <tr className="border-b border-slate-800">
-                <th className="text-left pb-1.5 pr-2 w-8">#</th>
-                <th className="text-left pb-1.5 pr-2">Jogador</th>
-                <th className="text-left pb-1.5 pr-2">Time</th>
-                <th className="text-center pb-1.5 px-1" title="Defesas">🧤</th>
-                <th className="text-center pb-1.5 px-1" title="Gols sofridos pelo time">GC time</th>
-                <th className="text-center pb-1.5 px-1" title="Partidas com nota">Jogos</th>
-                <th className="text-center pb-1.5 px-1" title="Média das notas">⭐</th>
-                <th className="text-right pb-1.5 pl-2" title="Score do goleiro">Score</th>
+                <th className="text-left pb-2 pr-2 w-8">#</th>
+                <th className="text-left pb-2 pr-3">Time</th>
+                <th className="text-left pb-2 pr-3">Usuário</th>
+                <th className="text-right pb-2 px-2">Posse média</th>
+                <th className="text-right pb-2 px-2">Finalizações</th>
+                <th className="text-right pb-2 px-2">xG</th>
+                <th className="text-right pb-2 pl-2">Gols − xG</th>
               </tr>
             </thead>
             <tbody>
-              {withData.map((p, i) => (
-                <tr key={`${p.teamId}|${p.playerName}`} className={cls(
-                  'border-b border-slate-800/40',
-                  i === 0 && 'bg-amber-950/20',
-                )}>
-                  <td className="py-1.5 pr-2 tabular-nums font-bold">
-                    <span className={cls(i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
-                  </td>
-                  <td className="py-1.5 pr-2 font-bold">
-                    {p.playerName}
-                    {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 inline ml-1" />}
-                  </td>
-                  <td className="py-1.5 pr-2">
-                    {openTeam ? (
-                      <button onClick={() => openTeam(p.teamId)} className="hover:text-lime-300 transition text-left">
-                        <span className="mr-1">{p.teamFlag}</span>{p.teamName}
+              {rows.map((row, index) => {
+                const diffTone = row.xGDiff == null
+                  ? 'text-slate-500'
+                  : row.xGDiff > 0.5
+                    ? 'text-emerald-400'
+                    : row.xGDiff < -0.5
+                      ? 'text-red-400'
+                      : 'text-slate-300';
+                return (
+                  <tr key={row.teamId} className="border-b border-slate-800/50 last:border-0">
+                    <td className="py-2 pr-2 font-bold tabular-nums text-slate-500">{index + 1}</td>
+                    <td className="py-2 pr-3">
+                      <button
+                        type="button"
+                        onClick={() => openTeam?.(row.teamId)}
+                        className="font-bold hover:text-lime-300 transition text-left"
+                      >
+                        <span className="mr-1.5">{row.flag}</span>{row.name}
                       </button>
-                    ) : (<><span className="mr-1">{p.teamFlag}</span>{p.teamName}</>)}
-                  </td>
-                  <td className="py-1.5 px-1 text-center tabular-nums font-bold text-yellow-300">{p.saves || 0}</td>
-                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.goalsAgainst}</td>
-                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.matchesPlayed || 0}</td>
-                  <td className="py-1.5 px-1 text-center tabular-nums font-bold">
-                    {p.avg > 0 ? p.avg.toFixed(2) : '—'}
-                  </td>
-                  <td className="py-1.5 pl-2 text-right tabular-nums font-mono font-black text-lime-300">
-                    {p.gkScore.toFixed(1)}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <OwnerTag
+                        owner={row.owner}
+                        p1Name={state.player1Name}
+                        p2Name={state.player2Name}
+                        p1Color={state.player1Color}
+                        p2Color={state.player2Color}
+                        size="xs"
+                      />
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums">
+                      <div className="font-bold">{row.possessionAvg == null ? '—' : `${row.possessionAvg.toFixed(1)}%`}</div>
+                      <div className="text-[9px] text-slate-600">{row.possessionCount > 0 ? `${row.possessionCount}j` : ''}</div>
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums">
+                      <div className="font-bold">{row.shotsCount > 0 ? row.shotsSum : '—'}</div>
+                      <div className="text-[9px] text-slate-600">{row.shotsAvg == null ? '' : `${row.shotsAvg.toFixed(1)}/j`}</div>
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums">
+                      <div className="font-bold">{row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}</div>
+                      <div className="text-[9px] text-slate-600">{row.xGAvg == null ? '' : `${row.xGAvg.toFixed(2)}/j`}</div>
+                    </td>
+                    <td className={cls('py-2 pl-2 text-right tabular-nums font-black', diffTone)}>
+                      {row.xGDiff == null ? '—' : `${row.xGDiff > 0 ? '+' : ''}${row.xGDiff.toFixed(2)}`}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        </div>
+        <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
+          “j” representa o número de atuações do time com aquela métrica preenchida. Dados ausentes não entram nas médias.
         </div>
       </Card>
     </section>
