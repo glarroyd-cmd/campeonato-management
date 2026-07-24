@@ -17,6 +17,9 @@ App web pra você e seu colega disputarem campeonatos de videogame de futebol �
 - **OCR via foto**: tira foto da tela de notas do FIFA/EA FC e o app extrai automaticamente (via API Anthropic, com a chave segura no servidor)
 - **Estatísticas**: artilharia, assistências, médias, cartões, campeão
 - **Tempo real**: dois dispositivos abrem o mesmo torneio e veem o estado atualizado na hora
+- **Sincronização protegida**: alterações em campos diferentes são combinadas automaticamente; dados preenchidos têm prioridade sobre snapshots vazios de abas antigas; somente conflitos reais no mesmo campo pedem escolha manual
+- **Copa 2026 oficial**: confrontos da fase de 32, rota até a final e as 495 combinações dos oito melhores terceiros; torneios com mata-mata já iniciado permanecem congelados
+- **Edição segura da chave**: sorteio de confrontos do mesmo dono em qualquer fase elegível, troca manual dentro da fase e confirmação explícita antes de salvar o novo caminho
 
 ## Stack
 - Frontend: React + Vite + Tailwind (CDN)
@@ -79,9 +82,12 @@ copa-online/
 │   ├── main.jsx
 │   └── lib/
 │       ├── supabase.js        # Client + clientId pra filtrar eco do Realtime
-│       ├── tournament.js      # Formatos, regras, cálculos, propagação
-│       └── localHistory.js    # Histórico local de códigos visitados
-├── supabase-schema.sql        # Schema do banco
+│       ├── tournament.js              # Formatos, regras, cálculos, propagação
+│       ├── wc2026ThirdPlaceTable.js    # 495 combinações oficiais dos melhores 3ºs
+│       ├── syncMerge.js                 # Merge de três vias e proteção dos inputs
+│       └── localHistory.js              # Histórico local de códigos visitados
+├── test/tournament.test.js             # Testes das regras críticas
+├── supabase-schema.sql                  # Schema do banco
 ├── vercel.json
 └── package.json
 ```
@@ -101,3 +107,10 @@ npm run dev
 ```
 
 Abre em `http://localhost:5173`. Note que o OCR (`/api/extract-ratings`) só funciona depois do deploy na Vercel — localmente ele 404. O resto roda igual.
+
+## Testes automatizados
+```bash
+npm test
+```
+
+Os testes validam a tabela completa dos melhores terceiros, os confrontos fixos da Copa 2026, o congelamento de campeonatos já iniciados, sorteios em fases diferentes, propagação após chaveamento customizado, imutabilidade de jogos concluídos e o merge de sincronização entre dispositivos.
