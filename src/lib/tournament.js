@@ -1257,10 +1257,20 @@ function findExtraForMainMatch(state, mainMatch) {
 function getConsolidatedMatch(state, mainMatch) {
   const extra = findExtraForMainMatch(state, mainMatch);
   if (!extra) return mainMatch;
+
+  /* Em confrontos de ida e volta, a ordem casa/fora da prorrogação pode ser
+     diferente da ordem do último jogo. Alinha o placar pelo ID do time antes
+     de somar, preservando a perspectiva do mainMatch. */
+  const extraScoreFor = (teamId) => {
+    if (extra.homeTeamId === teamId) return extra.homeScore ?? 0;
+    if (extra.awayTeamId === teamId) return extra.awayScore ?? 0;
+    return 0;
+  };
+
   return {
     ...mainMatch,
-    homeScore: (mainMatch.homeScore ?? 0) + (extra.homeScore ?? 0),
-    awayScore: (mainMatch.awayScore ?? 0) + (extra.awayScore ?? 0),
+    homeScore: (mainMatch.homeScore ?? 0) + extraScoreFor(mainMatch.homeTeamId),
+    awayScore: (mainMatch.awayScore ?? 0) + extraScoreFor(mainMatch.awayTeamId),
     events: [...(mainMatch.events || []), ...(extra.events || [])],
   };
 }
@@ -1351,10 +1361,49 @@ export function computePlayerStats(state) {
   return [...map.values()];
 }
 
+/* Consolida as métricas avançadas do tempo regulamentar com a prorrogação.
+   - Finalizações e xG são somados.
+   - Posse é consolidada em uma média ponderada por duração (90 min + 30 min),
+     para que a porcentagem continue válida e não possa ultrapassar 100%.
+   - O confronto continua contando como uma única partida nas médias. */
+function getConsolidatedTeamStats(state, mainMatch, teamId) {
+  const extra = findExtraForMainMatch(state, mainMatch);
+  const mainStats = mainMatch.teamStats?.[teamId] || {};
+  const extraStats = extra?.teamStats?.[teamId] || {};
+
+  const parseNumber = (value) => {
+    if (value == null || value === '') return null;
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const mainPossession = parseNumber(mainStats.possession);
+  const extraPossession = parseNumber(extraStats.possession);
+  let possession = null;
+  if (mainPossession != null && extraPossession != null) {
+    possession = ((mainPossession * 90) + (extraPossession * 30)) / 120;
+  } else {
+    possession = mainPossession ?? extraPossession;
+  }
+
+  const sumPeriods = (field) => {
+    const mainValue = parseNumber(mainStats[field]);
+    const extraValue = parseNumber(extraStats[field]);
+    if (mainValue == null && extraValue == null) return null;
+    return (mainValue || 0) + (extraValue || 0);
+  };
+
+  return {
+    possession,
+    shots: sumPeriods('shots'),
+    xG: sumPeriods('xG'),
+  };
+}
+
 /* ============================================================
    MÉTRICAS AVANÇADAS DE TIME
    Posse de bola, finalizações e Expected Goals (xG) — por confronto.
-   Suporta preenchimento parcial (só nos jogos onde o usuário quis).
+   Inclui os dados registrados na prorrogação e suporta preenchimento parcial.
    ============================================================ */
 export function computeTeamMetrics(state) {
   const map = new Map();
@@ -1379,41 +1428,38 @@ export function computeTeamMetrics(state) {
   for (const mainMatch of mainMatches) {
     if (!mainMatch.homeTeamId || !mainMatch.awayTeamId) continue;
     const consolidated = getConsolidatedMatch(state, mainMatch);
-    /* teamStats do main match (não tem no extra) */
-    const ts = mainMatch.teamStats || {};
-    const homeTs = ts[mainMatch.homeTeamId];
-    const awayTs = ts[mainMatch.awayTeamId];
+    const homeTs = getConsolidatedTeamStats(state, mainMatch, mainMatch.homeTeamId);
+    const awayTs = getConsolidatedTeamStats(state, mainMatch, mainMatch.awayTeamId);
 
     const h = ensure(mainMatch.homeTeamId);
     const a = ensure(mainMatch.awayTeamId);
 
-    if (homeTs) {
-      if (homeTs.possession != null && homeTs.possession !== '') {
-        const p = parseFloat(homeTs.possession);
-        if (!isNaN(p)) { h.possessionSum += p; h.possessionCount++; }
-      }
-      if (homeTs.shots != null && homeTs.shots !== '') {
-        const s = parseInt(homeTs.shots, 10);
-        if (!isNaN(s)) { h.shotsSum += s; h.shotsCount++; }
-      }
-      if (homeTs.xG != null && homeTs.xG !== '') {
-        const x = parseFloat(homeTs.xG);
-        if (!isNaN(x)) { h.xGSum += x; h.xGCount++; h.goals += consolidated.homeScore; }
-      }
+    if (homeTs.possession != null) {
+      h.possessionSum += homeTs.possession;
+      h.possessionCount++;
     }
-    if (awayTs) {
-      if (awayTs.possession != null && awayTs.possession !== '') {
-        const p = parseFloat(awayTs.possession);
-        if (!isNaN(p)) { a.possessionSum += p; a.possessionCount++; }
-      }
-      if (awayTs.shots != null && awayTs.shots !== '') {
-        const s = parseInt(awayTs.shots, 10);
-        if (!isNaN(s)) { a.shotsSum += s; a.shotsCount++; }
-      }
-      if (awayTs.xG != null && awayTs.xG !== '') {
-        const x = parseFloat(awayTs.xG);
-        if (!isNaN(x)) { a.xGSum += x; a.xGCount++; a.goals += consolidated.awayScore; }
-      }
+    if (homeTs.shots != null) {
+      h.shotsSum += homeTs.shots;
+      h.shotsCount++;
+    }
+    if (homeTs.xG != null) {
+      h.xGSum += homeTs.xG;
+      h.xGCount++;
+      h.goals += consolidated.homeScore;
+    }
+
+    if (awayTs.possession != null) {
+      a.possessionSum += awayTs.possession;
+      a.possessionCount++;
+    }
+    if (awayTs.shots != null) {
+      a.shotsSum += awayTs.shots;
+      a.shotsCount++;
+    }
+    if (awayTs.xG != null) {
+      a.xGSum += awayTs.xG;
+      a.xGCount++;
+      a.goals += consolidated.awayScore;
     }
   }
 
@@ -1496,12 +1542,28 @@ export function computeGoalkeeperRankings(state) {
     return pos === 'GOL';
   });
   const teamGoalsAgainst = computeGoalsAgainstByTeam(state);
+  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
   return goalkeepers.map((p) => {
     const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
     const goalsAgainst = teamGoalsAgainst[p.teamId] || 0;
-    /* Score: defesas × 3 + média × 8 - gols sofridos × 0,5 + bônus por partidas. */
-    const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + Math.log2((p.matchesPlayed || 0) + 1) * 2;
-    return { ...p, avg, goalsAgainst, gkScore: score };
+    const stageReached = maxStageByTeam[p.teamId] ?? 0;
+    const isChampionTeam = championTeamId === p.teamId;
+    const context = getPlayerContextBonus(p.matchesPlayed, stageReached, isChampionTeam);
+    /* Score: defesas × 3 + média × 8 - gols sofridos × 0,5 + bônus leve
+       por partidas e campanha. */
+    const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + context.total;
+    return {
+      ...p,
+      avg,
+      goalsAgainst,
+      stageReached,
+      isChampionTeam,
+      contextBonus: context.total,
+      matchesBonus: context.matchesBonus,
+      stageBonus: context.stageBonus,
+      championBonus: context.championBonus,
+      gkScore: score,
+    };
   }).sort((a, b) => b.gkScore - a.gkScore);
 }
 export function computeBestThirds(state) {
@@ -1610,12 +1672,64 @@ export function getPlayerPosition(state, teamId, playerName) {
   return state.playerPositions?.[key] || null;
 }
 
+/* Contexto competitivo usado nos rankings individuais.
+   O bônus é propositalmente pequeno: serve como desempate qualificado entre
+   atuações parecidas, sem permitir que volume ou campanha substituam nota,
+   gols, assistências ou defesas. */
+const PLAYER_STAGE_SCORE = {
+  group: 0,
+  r32: 1,
+  r16: 2,
+  qf: 3,
+  sf: 4,
+  third: 4.5,
+  final: 5,
+};
+
+function computePlayerTournamentContext(state) {
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    /* Se o time já foi propagado para uma fase, ele já alcançou essa fase,
+       mesmo que o confronto ainda não tenha sido disputado. */
+    if (m.stage === 'group' || !m.homeTeamId || !m.awayTeamId) continue;
+    const stageReached = PLAYER_STAGE_SCORE[m.stage] ?? 0;
+    for (const teamId of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[teamId] ?? -1) < stageReached) {
+        maxStageByTeam[teamId] = stageReached;
+      }
+    }
+  }
+  return {
+    maxStageByTeam,
+    championTeamId: getChampion(state)?.id || null,
+  };
+}
+
+function getPlayerContextBonus(matchesPlayed, stageReached, isChampionTeam) {
+  /* O log evita que cada jogo extra tenha o mesmo peso. O teto mantém o
+     volume como um bônus leve, mesmo em campeonatos longos. */
+  const matchesBonus = Math.min(
+    1.5,
+    Math.log2(Math.max(0, matchesPlayed || 0) + 1) * 0.5,
+  );
+  const stageBonus = Math.max(0, stageReached || 0) * 0.4;
+  const championBonus = isChampionTeam ? 0.75 : 0;
+  return {
+    matchesBonus,
+    stageBonus,
+    championBonus,
+    total: matchesBonus + stageBonus + championBonus,
+  };
+}
+
 /* Power score adaptado por posição.
    Goleiros valorizam mais a nota; atacantes mais o gol. */
 function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
-  const stageBonus = (maxStage ?? 0) * 3;
-  const champBonus = isChampionTeam ? 6 : 0;
-  const matchesBonus = Math.log2(s.ratingCount + 1) * 2;
+  const contextBonus = getPlayerContextBonus(
+    s.matchesPlayed ?? s.ratingCount,
+    maxStage,
+    isChampionTeam,
+  ).total;
   const cardPenalty = (s.yellows * 1) + (s.reds * 4);
   const avg = s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
 
@@ -1625,7 +1739,7 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
     return (s.saves || 0) * 3
       + avg * 8
       - (s.goalsAgainst || 0) * 0.5
-      + Math.log2((s.matchesPlayed || 0) + 1) * 2;
+      + contextBonus;
   }
 
   let coreScore;
@@ -1645,23 +1759,14 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
     default:
       coreScore = (avg * 6) + (s.goals * 4) + (s.assists * 2);
   }
-  return coreScore + stageBonus + champBonus + matchesBonus - cardPenalty;
+  return coreScore + contextBonus - cardPenalty;
 }
 
 /* Computes player stats with position info and position-adjusted score */
 export function computePlayersWithPosition(state) {
   const stats = computePlayerStats(state);
   const goalsAgainstByTeam = computeGoalsAgainstByTeam(state);
-  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
-  const maxStageByTeam = {};
-  for (const m of state.matches) {
-    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
-    const sScore = stageScore[m.stage] ?? 0;
-    for (const tid of [m.homeTeamId, m.awayTeamId]) {
-      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
-    }
-  }
-  const champ = getChampion(state);
+  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
   return stats
     .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
@@ -1669,11 +1774,24 @@ export function computePlayersWithPosition(state) {
       const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
       const goalsAgainst = goalsAgainstByTeam[s.teamId] || 0;
       const stageReached = maxStageByTeam[s.teamId] ?? 0;
-      const isChampionTeam = champ?.id === s.teamId;
+      const isChampionTeam = championTeamId === s.teamId;
+      const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
       const posScore = position
         ? getPositionAdjustedScore({ ...s, avg, goalsAgainst }, position, stageReached, isChampionTeam)
         : null;
-      return { ...s, avg, goalsAgainst, position, stageReached, isChampionTeam, posScore };
+      return {
+        ...s,
+        avg,
+        goalsAgainst,
+        position,
+        stageReached,
+        isChampionTeam,
+        contextBonus: context.total,
+        matchesBonus: context.matchesBonus,
+        stageBonus: context.stageBonus,
+        championBonus: context.championBonus,
+        posScore,
+      };
     });
 }
 
@@ -1912,23 +2030,14 @@ export function computePowerRankingTeams(state) {
    ============================================================ */
 export function computePowerRankingPlayers(state) {
   const playerStats = computePlayerStats(state);
-  /* Fase máxima do time */
-  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
-  const maxStageByTeam = {};
-  for (const m of state.matches) {
-    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
-    const sScore = stageScore[m.stage] ?? 0;
-    for (const tid of [m.homeTeamId, m.awayTeamId]) {
-      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
-    }
-  }
-  const champ = getChampion(state);
+  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
   return playerStats
     .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
       const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
-      const stageBonus = (maxStageByTeam[s.teamId] ?? 0) * 3;
-      const isChampionTeam = champ?.id === s.teamId;
+      const stageReached = maxStageByTeam[s.teamId] ?? 0;
+      const isChampionTeam = championTeamId === s.teamId;
+      const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
       const cardPenalty = (s.yellows * 1) + (s.reds * 4);
       const savesBonus = (s.saves || 0) * 1.5; // defesas contribuem (importante pra goleiros)
       const score =
@@ -1936,11 +2045,19 @@ export function computePowerRankingPlayers(state) {
         (s.goals * 4) +
         (s.assists * 2) +
         savesBonus +
-        stageBonus +
-        (isChampionTeam ? 6 : 0) +
-        Math.log2(s.ratingCount + 1) * 2 -
+        context.total -
         cardPenalty;
-      return { ...s, avg, stageReached: maxStageByTeam[s.teamId] ?? 0, isChampionTeam, powerScore: score };
+      return {
+        ...s,
+        avg,
+        stageReached,
+        isChampionTeam,
+        contextBonus: context.total,
+        matchesBonus: context.matchesBonus,
+        stageBonus: context.stageBonus,
+        championBonus: context.championBonus,
+        powerScore: score,
+      };
     })
     .sort((a, b) => b.powerScore - a.powerScore);
 }
