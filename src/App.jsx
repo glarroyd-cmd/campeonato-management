@@ -2552,6 +2552,7 @@ function KnockoutMatchExtras({ state, match, home, away, update, updateMatches }
       played: false,
       events: [],
       ratings: {},
+      teamStats: {},
       penaltyWinner: null,
     };
     updateMatches([...state.matches, newET]);
@@ -3833,13 +3834,17 @@ function PowerRankingPlayersList({ rows, state, openTeam, maxHeight = '440px' })
                 >{p.teamName}</button>
               </div>
               <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-2">
+                {p.matchesPlayed > 0 && <span className="tabular-nums" title="Partidas avaliadas">{p.matchesPlayed}j</span>}
                 {p.goals > 0 && <span className="tabular-nums text-emerald-400">⚽{p.goals}</span>}
                 {p.assists > 0 && <span className="tabular-nums text-sky-400">🤝{p.assists}</span>}
                 {p.avg > 0 && <span className="tabular-nums text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
                 {p.yellows > 0 && <span className="tabular-nums text-yellow-500">🟨{p.yellows}</span>}
                 {p.reds > 0 && <span className="tabular-nums text-red-400">🟥{p.reds}</span>}
               </div>
-              <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
+              <div
+                className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right"
+                title={`Bônus de contexto: +${(p.contextBonus || 0).toFixed(1)} (${p.matchesPlayed || 0} jogos e campanha do time)`}
+              >
                 {p.powerScore.toFixed(1)}
               </div>
             </div>
@@ -4173,7 +4178,7 @@ function PositionRanking({ posDef, list, state }) {
                 </div>
                 <div
                   className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right"
-                  title={posDef.id === 'GOL' ? 'Score: defesas, média, gols sofridos e partidas' : 'Score por posição'}
+                  title={`${posDef.id === 'GOL' ? 'Score: defesas, média e gols sofridos' : 'Score por posição'} · bônus de contexto +${(p.contextBonus || 0).toFixed(1)} por jogos e campanha`}
                 >
                   {p.posScore.toFixed(1)}
                 </div>
