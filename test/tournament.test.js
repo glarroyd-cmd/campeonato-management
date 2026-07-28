@@ -11,8 +11,10 @@ import {
   propagateKnockoutWinners,
   R32_PATTERN_WC2026,
   computeOwnerMetrics,
+  computeTeamMetrics,
   computePlayersByPosition,
   computeGoalkeeperRankings,
+  computePowerRankingPlayers,
 } from '../src/lib/tournament.js';
 import {
   getWc2026ThirdPlaceAssignments,
@@ -395,6 +397,87 @@ test('estatísticas avançadas são agregadas por usuário sem misturar dados au
   assert.ok(Math.abs(p2.xGDiff - 0.2) < 1e-9);
 });
 
+test('estatísticas avançadas somam xG e finalizações da prorrogação e ponderam a posse', () => {
+  const state = makeInitialState('ko8');
+  state.player1Name = 'Ana';
+  state.player2Name = 'Bruno';
+  state.koTeams = state.koTeams.map((team, index) => ({
+    ...team,
+    owner: index === 0 ? 'p1' : index === 1 ? 'p2' : team.owner,
+  }));
+  state.matches = [
+    {
+      id: 'advanced-main',
+      stage: 'qf',
+      koIndex: 0,
+      leg: 1,
+      totalLegs: 1,
+      played: true,
+      autoPlayed: false,
+      isExtra: false,
+      homeTeamId: 'KO2',
+      awayTeamId: 'KO1',
+      homeScore: 1,
+      awayScore: 1,
+      events: [],
+      ratings: {},
+      teamStats: {
+        KO1: { possession: '60', shots: '10', xG: '1.20' },
+        KO2: { possession: '40', shots: '6', xG: '0.70' },
+      },
+    },
+    {
+      id: 'advanced-extra',
+      stage: 'qf',
+      koIndex: 0,
+      leg: 1,
+      totalLegs: 1,
+      played: true,
+      autoPlayed: false,
+      isExtra: true,
+      homeTeamId: 'KO1',
+      awayTeamId: 'KO2',
+      homeScore: 1,
+      awayScore: 0,
+      events: [],
+      ratings: {},
+      teamStats: {
+        KO1: { possession: '55', shots: '4', xG: '0.60' },
+        KO2: { possession: '45', shots: '2', xG: '0.20' },
+      },
+    },
+  ];
+
+  const teams = computeTeamMetrics(state);
+  const ko1 = teams.find((row) => row.teamId === 'KO1');
+  const ko2 = teams.find((row) => row.teamId === 'KO2');
+
+  assert.equal(ko1.shotsSum, 14);
+  assert.equal(ko1.shotsCount, 1);
+  assert.ok(Math.abs(ko1.xGSum - 1.8) < 1e-9);
+  assert.equal(ko1.xGCount, 1);
+  assert.equal(ko1.goals, 2);
+  assert.ok(Math.abs(ko1.xGDiff - 0.2) < 1e-9);
+  assert.equal(ko1.possessionAvg, 58.75);
+  assert.equal(ko1.possessionCount, 1);
+
+  assert.equal(ko2.shotsSum, 8);
+  assert.ok(Math.abs(ko2.xGSum - 0.9) < 1e-9);
+  assert.equal(ko2.goals, 1);
+  assert.ok(Math.abs(ko2.xGDiff - 0.1) < 1e-9);
+  assert.equal(ko2.possessionAvg, 41.25);
+
+  const owners = computeOwnerMetrics(state);
+  const p1 = owners.find((row) => row.owner === 'p1');
+  const p2 = owners.find((row) => row.owner === 'p2');
+  assert.equal(p1.shotsSum, 14);
+  assert.ok(Math.abs(p1.xGSum - 1.8) < 1e-9);
+  assert.equal(p1.possessionAvg, 58.75);
+  assert.equal(p2.shotsSum, 8);
+  assert.ok(Math.abs(p2.xGSum - 0.9) < 1e-9);
+  assert.equal(p2.possessionAvg, 41.25);
+});
+
 test('o quadro de goleiros em melhores por posição usa o score completo do antigo ranking', () => {
   const state = makeInitialState('ko8');
   state.koTeams = state.koTeams.map((team, index) => ({
@@ -430,5 +513,92 @@ test('o quadro de goleiros em melhores por posição usa o score completo do ant
   assert.equal(positionRow.goalsAgainst, 1);
   assert.equal(positionRow.saves, 4);
   assert.equal(positionRow.posScore, oldRankingRow.gkScore);
-  assert.equal(positionRow.posScore, 73.5);
+  assert.equal(positionRow.posScore, 73.2);
+});
+
+test('rankings individuais dão bônus leve por mais jogos e por fase alcançada', () => {
+  const state = makeInitialState('ko8');
+  state.playerPositions = {
+    'KO1|Jogador com campanha': 'ATA',
+    'KO2|Jogador com volume': 'ATA',
+    'KO3|Jogador base': 'ATA',
+  };
+  state.matches = [
+    {
+      id: 'ranking-campaign-rating', stage: 'group', group: 'C', round: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: 1, awayScore: 0,
+      events: [], ratings: { KO1: { 'Jogador com campanha': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-qf', stage: 'qf', koIndex: 0, leg: 1,
+      played: false, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: null, awayScore: null,
+      events: [], ratings: {}, teamStats: {},
+    },
+    {
+      id: 'ranking-group-a', stage: 'group', group: 'A', round: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 0, awayScore: 0,
+      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-group-b', stage: 'group', group: 'A', round: 2,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO2', awayTeamId: 'KO6', homeScore: 0, awayScore: 0,
+      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-group-c', stage: 'group', group: 'B', round: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO3', awayTeamId: 'KO7', homeScore: 0, awayScore: 0,
+      events: [], ratings: { KO3: { 'Jogador base': '7.0' } }, teamStats: {},
+    },
+  ];
+
+  const byPosition = computePlayersByPosition(state, 'ATA', 10);
+  const campaign = byPosition.find((row) => row.playerName === 'Jogador com campanha');
+  const volume = byPosition.find((row) => row.playerName === 'Jogador com volume');
+  const base = byPosition.find((row) => row.playerName === 'Jogador base');
+
+  assert.ok(campaign.posScore > base.posScore);
+  assert.ok(volume.posScore > base.posScore);
+  assert.ok(campaign.contextBonus <= 4.25);
+  assert.ok(volume.contextBonus <= 4.25);
+
+  const power = computePowerRankingPlayers(state);
+  assert.ok(
+    power.find((row) => row.playerName === 'Jogador com campanha').powerScore
+      > power.find((row) => row.playerName === 'Jogador base').powerScore,
+  );
+  assert.ok(
+    power.find((row) => row.playerName === 'Jogador com volume').powerScore
+      > power.find((row) => row.playerName === 'Jogador base').powerScore,
+  );
+});
+
+test('o bônus de campanha não supera uma atuação individual claramente melhor', () => {
+  const state = makeInitialState('ko8');
+  state.playerPositions = {
+    'KO1|Campanha longa': 'ATA',
+    'KO2|Melhor atuação': 'ATA',
+  };
+  state.matches = [
+    {
+      id: 'ranking-final', stage: 'final', koIndex: 0, leg: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: 1, awayScore: 0,
+      events: [], ratings: { KO1: { 'Campanha longa': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-performance', stage: 'group', group: 'A', round: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 1, awayScore: 0,
+      events: [{ id: 'g-ranking', teamId: 'KO2', type: 'goal', playerName: 'Melhor atuação' }],
+      ratings: { KO2: { 'Melhor atuação': '7.0' } }, teamStats: {},
+    },
+  ];
+
+  const ranking = computePlayersByPosition(state, 'ATA', 10);
+  assert.equal(ranking[0].playerName, 'Melhor atuação');
 });
