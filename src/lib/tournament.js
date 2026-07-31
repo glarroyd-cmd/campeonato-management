@@ -1325,6 +1325,7 @@ export function computePlayerStats(state) {
         owner: team?.owner || null,
         goals: 0, assists: 0, yellows: 0, reds: 0, saves: 0,
         ratingSum: 0, ratingCount: 0,
+        weightedRatingSum: 0, ratingWeight: 0, weightedAvg: 0,
         matchesPlayed: 0,
       });
     }
@@ -1335,6 +1336,7 @@ export function computePlayerStats(state) {
   const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
 
   for (const mainMatch of mainMatches) {
+    const stageWeight = getPlayerMatchStageWeight(mainMatch.stage);
     /* Eventos: soma main + prorrogação */
     const consolidated = getConsolidatedMatch(state, mainMatch);
     for (const ev of (consolidated.events || [])) {
@@ -1354,11 +1356,18 @@ export function computePlayerStats(state) {
         const stat = ensure(teamId, pname);
         stat.ratingSum += avg;
         stat.ratingCount++;
+        stat.weightedRatingSum += avg * stageWeight;
+        stat.ratingWeight += stageWeight;
         stat.matchesPlayed++;
       }
     }
   }
-  return [...map.values()];
+  return [...map.values()].map((stat) => ({
+    ...stat,
+    weightedAvg: stat.ratingWeight > 0
+      ? stat.weightedRatingSum / stat.ratingWeight
+      : 0,
+  }));
 }
 
 /* Consolida as métricas avançadas do tempo regulamentar com a prorrogação.
@@ -1544,17 +1553,21 @@ export function computeGoalkeeperRankings(state) {
   const teamGoalsAgainst = computeGoalsAgainstByTeam(state);
   const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
   return goalkeepers.map((p) => {
-    const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+    const simpleAvg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+    const avg = p.weightedAvg ?? simpleAvg;
     const goalsAgainst = teamGoalsAgainst[p.teamId] || 0;
     const stageReached = maxStageByTeam[p.teamId] ?? 0;
     const isChampionTeam = championTeamId === p.teamId;
     const context = getPlayerContextBonus(p.matchesPlayed, stageReached, isChampionTeam);
-    /* Score: defesas × 3 + média × 8 - gols sofridos × 0,5 + bônus leve
-       por partidas e campanha. */
-    const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + context.total;
+    const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
+    /* Score: defesas × 3 + média ponderada × 8 - gols sofridos × 0,5.
+       O núcleo é modulado pela campanha e depois recebe os bônus de contexto. */
+    const coreScore = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5;
+    const score = coreScore * campaignMultiplier + context.total;
     return {
       ...p,
       avg,
+      simpleAvg,
       goalsAgainst,
       stageReached,
       isChampionTeam,
@@ -1562,6 +1575,7 @@ export function computeGoalkeeperRankings(state) {
       matchesBonus: context.matchesBonus,
       stageBonus: context.stageBonus,
       championBonus: context.championBonus,
+      campaignMultiplier,
       gkScore: score,
     };
   }).sort((a, b) => b.gkScore - a.gkScore);
@@ -1673,9 +1687,8 @@ export function getPlayerPosition(state, teamId, playerName) {
 }
 
 /* Contexto competitivo usado nos rankings individuais.
-   O bônus é propositalmente pequeno: serve como desempate qualificado entre
-   atuações parecidas, sem permitir que volume ou campanha substituam nota,
-   gols, assistências ou defesas. */
+   A campanha passou a ter influência relevante: o desempenho nas fases finais
+   pesa mais na média e o score-base é ajustado pela profundidade alcançada. */
 const PLAYER_STAGE_SCORE = {
   group: 0,
   r32: 1,
@@ -1685,6 +1698,37 @@ const PLAYER_STAGE_SCORE = {
   third: 4.5,
   final: 5,
 };
+
+/* Peso de cada partida na média individual do torneio.
+   Uma atuação na final vale 2,75x uma atuação na fase de grupos. A curva é
+   progressiva para que o desempenho nas rodadas decisivas tenha mais impacto,
+   sem apagar o que o jogador fez no início da competição. */
+export const PLAYER_MATCH_STAGE_WEIGHT = Object.freeze({
+  group: 1,
+  r32: 1.2,
+  r16: 1.45,
+  qf: 1.8,
+  sf: 2.25,
+  third: 2.1,
+  final: 2.75,
+});
+
+function getPlayerMatchStageWeight(stage) {
+  return PLAYER_MATCH_STAGE_WEIGHT[stage] ?? 1;
+}
+
+/* A campanha também modula levemente o score-base. Isso evita que uma sequência
+   curta de notas altas nas primeiras rodadas domine a seleção do campeonato
+   sobre jogadores que mantiveram bom nível até as fases decisivas. */
+function getPlayerCampaignMultiplier(stageReached) {
+  if (stageReached >= 5) return 1;
+  if (stageReached >= 4.5) return 0.985;
+  if (stageReached >= 4) return 0.97;
+  if (stageReached >= 3) return 0.91;
+  if (stageReached >= 2) return 0.85;
+  if (stageReached >= 1) return 0.78;
+  return 0.72;
+}
 
 function computePlayerTournamentContext(state) {
   const maxStageByTeam = {};
@@ -1712,8 +1756,16 @@ function getPlayerContextBonus(matchesPlayed, stageReached, isChampionTeam) {
     1.5,
     Math.log2(Math.max(0, matchesPlayed || 0) + 1) * 0.5,
   );
-  const stageBonus = Math.max(0, stageReached || 0) * 0.4;
-  const championBonus = isChampionTeam ? 0.75 : 0;
+  /* A progressão não é linear: quartas, semifinal e final têm saltos maiores
+     porque representam desempenho sustentado contra adversários mais fortes. */
+  let stageBonus = 0;
+  if (stageReached >= 5) stageBonus = 8;
+  else if (stageReached >= 4.5) stageBonus = 6.5;
+  else if (stageReached >= 4) stageBonus = 6;
+  else if (stageReached >= 3) stageBonus = 4;
+  else if (stageReached >= 2) stageBonus = 2.5;
+  else if (stageReached >= 1) stageBonus = 1;
+  const championBonus = isChampionTeam ? 2 : 0;
   return {
     matchesBonus,
     stageBonus,
@@ -1731,15 +1783,16 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
     isChampionTeam,
   ).total;
   const cardPenalty = (s.yellows * 1) + (s.reds * 4);
-  const avg = s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
+  const avg = s.weightedAvg ?? s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
+  const campaignMultiplier = getPlayerCampaignMultiplier(maxStage);
 
-  /* Para goleiros, usa exatamente os critérios antes exibidos no ranking
-     separado: defesas, média, gols sofridos pelo time e partidas. */
+  /* Para goleiros, usa os critérios antes exibidos no ranking separado,
+     agora com média ponderada por fase e relevância da campanha. */
   if (position === 'GOL') {
-    return (s.saves || 0) * 3
+    const coreScore = (s.saves || 0) * 3
       + avg * 8
-      - (s.goalsAgainst || 0) * 0.5
-      + contextBonus;
+      - (s.goalsAgainst || 0) * 0.5;
+    return coreScore * campaignMultiplier + contextBonus;
   }
 
   let coreScore;
@@ -1759,7 +1812,7 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
     default:
       coreScore = (avg * 6) + (s.goals * 4) + (s.assists * 2);
   }
-  return coreScore + contextBonus - cardPenalty;
+  return coreScore * campaignMultiplier + contextBonus - cardPenalty;
 }
 
 /* Computes player stats with position info and position-adjusted score */
@@ -1771,17 +1824,20 @@ export function computePlayersWithPosition(state) {
     .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
       const position = getPlayerPosition(state, s.teamId, s.playerName);
-      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const simpleAvg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const avg = s.weightedAvg ?? simpleAvg;
       const goalsAgainst = goalsAgainstByTeam[s.teamId] || 0;
       const stageReached = maxStageByTeam[s.teamId] ?? 0;
       const isChampionTeam = championTeamId === s.teamId;
       const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
+      const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
       const posScore = position
-        ? getPositionAdjustedScore({ ...s, avg, goalsAgainst }, position, stageReached, isChampionTeam)
+        ? getPositionAdjustedScore({ ...s, avg, weightedAvg: avg, goalsAgainst }, position, stageReached, isChampionTeam)
         : null;
       return {
         ...s,
         avg,
+        simpleAvg,
         goalsAgainst,
         position,
         stageReached,
@@ -1790,6 +1846,7 @@ export function computePlayersWithPosition(state) {
         matchesBonus: context.matchesBonus,
         stageBonus: context.stageBonus,
         championBonus: context.championBonus,
+        campaignMultiplier,
         posScore,
       };
     });
@@ -1887,7 +1944,7 @@ export function getNotablePlayersForTeam(state, teamId, limit = 3) {
   if (stats.length === 0) return [];
   const ranked = stats
     .map((s) => {
-      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const avg = s.weightedAvg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
       const score = (avg * 10) + (s.goals * 3) + (s.assists * 1.5);
       return { ...s, avg, score };
     })
@@ -2026,7 +2083,7 @@ export function computePowerRankingTeams(state) {
 
 /* ============================================================
    POWER RANKING DE JOGADORES EM CAMPO
-   Combina notas, gols/assistências, e fase máxima do time.
+   Combina média ponderada por fase, gols/assistências e profundidade da campanha.
    ============================================================ */
 export function computePowerRankingPlayers(state) {
   const playerStats = computePlayerStats(state);
@@ -2034,28 +2091,34 @@ export function computePowerRankingPlayers(state) {
   return playerStats
     .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
-      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const simpleAvg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const avg = s.weightedAvg ?? simpleAvg;
       const stageReached = maxStageByTeam[s.teamId] ?? 0;
       const isChampionTeam = championTeamId === s.teamId;
       const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
+      const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
       const cardPenalty = (s.yellows * 1) + (s.reds * 4);
       const savesBonus = (s.saves || 0) * 1.5; // defesas contribuem (importante pra goleiros)
-      const score =
+      const coreScore =
         (avg * 6) +
         (s.goals * 4) +
         (s.assists * 2) +
-        savesBonus +
+        savesBonus;
+      const score =
+        (coreScore * campaignMultiplier) +
         context.total -
         cardPenalty;
       return {
         ...s,
         avg,
+        simpleAvg,
         stageReached,
         isChampionTeam,
         contextBonus: context.total,
         matchesBonus: context.matchesBonus,
         stageBonus: context.stageBonus,
         championBonus: context.championBonus,
+        campaignMultiplier,
         powerScore: score,
       };
     })
