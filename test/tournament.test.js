@@ -14,7 +14,10 @@ import {
   computeTeamMetrics,
   computePlayersByPosition,
   computeGoalkeeperRankings,
+  computePlayerStats,
   computePowerRankingPlayers,
+  computeBestXI,
+  PLAYER_MATCH_STAGE_WEIGHT,
 } from '../src/lib/tournament.js';
 import {
   getWc2026ThirdPlaceAssignments,
@@ -478,7 +481,7 @@ test('estatísticas avançadas somam xG e finalizações da prorrogação e pond
   assert.equal(p2.possessionAvg, 41.25);
 });
 
-test('o quadro de goleiros em melhores por posição usa o score completo do antigo ranking', () => {
+test('o quadro de goleiros em melhores por posição usa a mesma fórmula do ranking de goleiros', () => {
   const state = makeInitialState('ko8');
   state.koTeams = state.koTeams.map((team, index) => ({
     ...team,
@@ -508,97 +511,125 @@ test('o quadro de goleiros em melhores por posição usa o score completo do ant
   }];
 
   const positionRow = computePlayersByPosition(state, 'GOL', 10)[0];
-  const oldRankingRow = computeGoalkeeperRankings(state)[0];
+  const goalkeeperRow = computeGoalkeeperRankings(state)[0];
 
   assert.equal(positionRow.goalsAgainst, 1);
   assert.equal(positionRow.saves, 4);
-  assert.equal(positionRow.posScore, oldRankingRow.gkScore);
-  assert.equal(positionRow.posScore, 73.2);
+  assert.equal(positionRow.posScore, goalkeeperRow.gkScore);
+  assert.ok(Math.abs(positionRow.posScore - 69.565) < 1e-9);
 });
 
-test('rankings individuais dão bônus leve por mais jogos e por fase alcançada', () => {
+test('a média individual dá mais peso às atuações nas fases decisivas', () => {
   const state = makeInitialState('ko8');
-  state.playerPositions = {
-    'KO1|Jogador com campanha': 'ATA',
-    'KO2|Jogador com volume': 'ATA',
-    'KO3|Jogador base': 'ATA',
-  };
   state.matches = [
     {
-      id: 'ranking-campaign-rating', stage: 'group', group: 'C', round: 1,
+      id: 'weighted-group', stage: 'group', group: 'A', round: 1,
       played: true, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: 1, awayScore: 0,
-      events: [], ratings: { KO1: { 'Jogador com campanha': '7.0' } }, teamStats: {},
+      homeTeamId: 'KO1', awayTeamId: 'KO2', homeScore: 1, awayScore: 0,
+      events: [],
+      ratings: { KO1: { 'Craque do início': '10', 'Craque decisivo': '6' } },
+      teamStats: {},
     },
     {
-      id: 'ranking-qf', stage: 'qf', koIndex: 0, leg: 1,
-      played: false, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: null, awayScore: null,
-      events: [], ratings: {}, teamStats: {},
-    },
-    {
-      id: 'ranking-group-a', stage: 'group', group: 'A', round: 1,
+      id: 'weighted-final', stage: 'final', koIndex: 0, leg: 1,
       played: true, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 0, awayScore: 0,
-      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
-    },
-    {
-      id: 'ranking-group-b', stage: 'group', group: 'A', round: 2,
-      played: true, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO2', awayTeamId: 'KO6', homeScore: 0, awayScore: 0,
-      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
-    },
-    {
-      id: 'ranking-group-c', stage: 'group', group: 'B', round: 1,
-      played: true, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO3', awayTeamId: 'KO7', homeScore: 0, awayScore: 0,
-      events: [], ratings: { KO3: { 'Jogador base': '7.0' } }, teamStats: {},
+      homeTeamId: 'KO1', awayTeamId: 'KO2', homeScore: 1, awayScore: 0,
+      events: [],
+      ratings: { KO1: { 'Craque do início': '6', 'Craque decisivo': '10' } },
+      teamStats: {},
     },
   ];
 
-  const byPosition = computePlayersByPosition(state, 'ATA', 10);
-  const campaign = byPosition.find((row) => row.playerName === 'Jogador com campanha');
-  const volume = byPosition.find((row) => row.playerName === 'Jogador com volume');
-  const base = byPosition.find((row) => row.playerName === 'Jogador base');
+  assert.equal(PLAYER_MATCH_STAGE_WEIGHT.group, 1);
+  assert.equal(PLAYER_MATCH_STAGE_WEIGHT.final, 2.75);
 
-  assert.ok(campaign.posScore > base.posScore);
-  assert.ok(volume.posScore > base.posScore);
-  assert.ok(campaign.contextBonus <= 4.25);
-  assert.ok(volume.contextBonus <= 4.25);
+  const stats = computePlayerStats(state);
+  const early = stats.find((row) => row.playerName === 'Craque do início');
+  const decisive = stats.find((row) => row.playerName === 'Craque decisivo');
+
+  assert.equal(early.ratingSum / early.ratingCount, 8);
+  assert.equal(decisive.ratingSum / decisive.ratingCount, 8);
+  assert.ok(decisive.weightedAvg > early.weightedAvg);
+  assert.ok(Math.abs(early.weightedAvg - ((10 + 6 * 2.75) / 3.75)) < 1e-9);
+  assert.ok(Math.abs(decisive.weightedAvg - ((6 + 10 * 2.75) / 3.75)) < 1e-9);
 
   const power = computePowerRankingPlayers(state);
-  assert.ok(
-    power.find((row) => row.playerName === 'Jogador com campanha').powerScore
-      > power.find((row) => row.playerName === 'Jogador base').powerScore,
-  );
-  assert.ok(
-    power.find((row) => row.playerName === 'Jogador com volume').powerScore
-      > power.find((row) => row.playerName === 'Jogador base').powerScore,
-  );
+  assert.equal(power[0].playerName, 'Craque decisivo');
 });
 
-test('o bônus de campanha não supera uma atuação individual claramente melhor', () => {
+test('a campanha tem influência progressiva e maior que o simples volume de jogos', () => {
   const state = makeInitialState('ko8');
   state.playerPositions = {
-    'KO1|Campanha longa': 'ATA',
-    'KO2|Melhor atuação': 'ATA',
+    'KO1|Jogador finalista': 'ATA',
+    'KO2|Jogador com volume': 'ATA',
+    'KO3|Jogador eliminado cedo': 'ATA',
   };
   state.matches = [
     {
       id: 'ranking-final', stage: 'final', koIndex: 0, leg: 1,
       played: true, autoPlayed: false, isExtra: false,
       homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: 1, awayScore: 0,
-      events: [], ratings: { KO1: { 'Campanha longa': '7.0' } }, teamStats: {},
+      events: [], ratings: { KO1: { 'Jogador finalista': '7.0' } }, teamStats: {},
     },
     {
-      id: 'ranking-performance', stage: 'group', group: 'A', round: 1,
+      id: 'ranking-volume-a', stage: 'group', group: 'A', round: 1,
       played: true, autoPlayed: false, isExtra: false,
-      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 1, awayScore: 0,
-      events: [{ id: 'g-ranking', teamId: 'KO2', type: 'goal', playerName: 'Melhor atuação' }],
-      ratings: { KO2: { 'Melhor atuação': '7.0' } }, teamStats: {},
+      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 0, awayScore: 0,
+      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-volume-b', stage: 'group', group: 'A', round: 2,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO2', awayTeamId: 'KO6', homeScore: 0, awayScore: 0,
+      events: [], ratings: { KO2: { 'Jogador com volume': '7.0' } }, teamStats: {},
+    },
+    {
+      id: 'ranking-r32', stage: 'r32', koIndex: 1, leg: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO3', awayTeamId: 'KO7', homeScore: 0, awayScore: 1,
+      events: [], ratings: { KO3: { 'Jogador eliminado cedo': '8.0' } }, teamStats: {},
     },
   ];
 
   const ranking = computePlayersByPosition(state, 'ATA', 10);
-  assert.equal(ranking[0].playerName, 'Melhor atuação');
+  const finalist = ranking.find((row) => row.playerName === 'Jogador finalista');
+  const volume = ranking.find((row) => row.playerName === 'Jogador com volume');
+  const early = ranking.find((row) => row.playerName === 'Jogador eliminado cedo');
+
+  assert.ok(finalist.contextBonus > early.contextBonus);
+  assert.ok(finalist.campaignMultiplier > early.campaignMultiplier);
+  assert.ok(early.campaignMultiplier > volume.campaignMultiplier);
+  assert.ok(finalist.posScore > early.posScore);
+  assert.ok(finalist.posScore > volume.posScore);
+});
+
+test('um finalista consistente supera uma grande atuação isolada nas primeiras fases na seleção do campeonato', () => {
+  const state = makeInitialState('ko8');
+  state.playerPositions = {
+    'KO1|Finalista consistente': 'ATA',
+    'KO2|Destaque precoce': 'ATA',
+  };
+  state.matches = [
+    {
+      id: 'selection-final', stage: 'final', koIndex: 0, leg: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO1', awayTeamId: 'KO4', homeScore: 1, awayScore: 0,
+      events: [], ratings: { KO1: { 'Finalista consistente': '7.5' } }, teamStats: {},
+    },
+    {
+      id: 'selection-r32', stage: 'r32', koIndex: 1, leg: 1,
+      played: true, autoPlayed: false, isExtra: false,
+      homeTeamId: 'KO2', awayTeamId: 'KO5', homeScore: 0, awayScore: 1,
+      events: [], ratings: { KO2: { 'Destaque precoce': '9.5' } }, teamStats: {},
+    },
+  ];
+
+  const bestXI = computeBestXI(state);
+  assert.equal(bestXI.ATA[0].playerName, 'Finalista consistente');
+
+  const power = computePowerRankingPlayers(state);
+  assert.ok(
+    power.find((row) => row.playerName === 'Finalista consistente').powerScore
+      > power.find((row) => row.playerName === 'Destaque precoce').powerScore,
+  );
 });
