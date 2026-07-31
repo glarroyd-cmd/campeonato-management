@@ -3566,7 +3566,14 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
-  const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg);
+  const topRated   = [...playerStats]
+    .filter((s) => s.ratingCount >= 2)
+    .map((s) => ({
+      ...s,
+      simpleAvg: s.ratingSum / s.ratingCount,
+      avg: s.weightedAvg ?? (s.ratingSum / s.ratingCount),
+    }))
+    .sort((a, b) => b.avg - a.avg);
   const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows));
 
   const champion = getChampion(state);
@@ -3684,7 +3691,7 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} state={state} />
           <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} state={state} />
-          <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} state={state} />
+          <StatsList title="Melhores médias ponderadas" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold" title={`Média ponderada pela fase da partida. Média simples: ${s.simpleAvg.toFixed(2)}`}>{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} state={state} />
           <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} state={state} />
         </div>
       </section>
@@ -3843,7 +3850,7 @@ function PowerRankingPlayersList({ rows, state, openTeam, maxHeight = '440px' })
               </div>
               <div
                 className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right"
-                title={`Bônus de contexto: +${(p.contextBonus || 0).toFixed(1)} (${p.matchesPlayed || 0} jogos e campanha do time)`}
+                title={`Média ponderada: ${p.avg.toFixed(2)} · multiplicador da campanha: ${(p.campaignMultiplier || 1).toFixed(3)} · bônus de contexto: +${(p.contextBonus || 0).toFixed(1)}`}
               >
                 {p.powerScore.toFixed(1)}
               </div>
@@ -4178,7 +4185,7 @@ function PositionRanking({ posDef, list, state }) {
                 </div>
                 <div
                   className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right"
-                  title={`${posDef.id === 'GOL' ? 'Score: defesas, média e gols sofridos' : 'Score por posição'} · bônus de contexto +${(p.contextBonus || 0).toFixed(1)} por jogos e campanha`}
+                  title={`${posDef.id === 'GOL' ? 'Score: defesas, média ponderada e gols sofridos' : 'Score por posição com média ponderada'} · multiplicador da campanha ${(p.campaignMultiplier || 1).toFixed(3)} · bônus de contexto +${(p.contextBonus || 0).toFixed(1)}`}
                 >
                   {p.posScore.toFixed(1)}
                 </div>
@@ -4522,7 +4529,7 @@ function TeamDetailView({ state, teamId, onBack, openMatch }) {
                 {ratedPlayers.map((p) => {
                   const pos = getPlayerPosition(state, teamId, p.playerName);
                   const posDef = POSITIONS.find((pp) => pp.id === pos);
-                  const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
+                  const avg = p.weightedAvg ?? (p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0);
                   return (
                     <tr key={p.playerName} className="border-b border-slate-800/50">
                       <td className="py-1.5 pr-2">
