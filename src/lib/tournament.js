@@ -1426,8 +1426,11 @@ export function computeTeamMetrics(state) {
         owner: team?.owner || null,
         possessionSum: 0, possessionCount: 0,
         shotsSum: 0, shotsCount: 0,
+        shotsAgainstSum: 0, shotsAgainstCount: 0,
         xGSum: 0, xGCount: 0,
-        goals: 0, // gols nos mesmos jogos onde tem xG registrado (pra comparação)
+        xGAgainstSum: 0, xGAgainstCount: 0,
+        goals: 0, // gols nos mesmos jogos onde o xG próprio foi registrado
+        goalsAgainst: 0, // gols sofridos nos mesmos jogos onde o xG rival foi registrado
       });
     }
     return map.get(teamId);
@@ -1451,10 +1454,19 @@ export function computeTeamMetrics(state) {
       h.shotsSum += homeTs.shots;
       h.shotsCount++;
     }
+    if (awayTs.shots != null) {
+      h.shotsAgainstSum += awayTs.shots;
+      h.shotsAgainstCount++;
+    }
     if (homeTs.xG != null) {
       h.xGSum += homeTs.xG;
       h.xGCount++;
       h.goals += consolidated.homeScore;
+    }
+    if (awayTs.xG != null) {
+      h.xGAgainstSum += awayTs.xG;
+      h.xGAgainstCount++;
+      h.goalsAgainst += consolidated.awayScore;
     }
 
     if (awayTs.possession != null) {
@@ -1465,10 +1477,19 @@ export function computeTeamMetrics(state) {
       a.shotsSum += awayTs.shots;
       a.shotsCount++;
     }
+    if (homeTs.shots != null) {
+      a.shotsAgainstSum += homeTs.shots;
+      a.shotsAgainstCount++;
+    }
     if (awayTs.xG != null) {
       a.xGSum += awayTs.xG;
       a.xGCount++;
       a.goals += consolidated.awayScore;
+    }
+    if (homeTs.xG != null) {
+      a.xGAgainstSum += homeTs.xG;
+      a.xGAgainstCount++;
+      a.goalsAgainst += consolidated.homeScore;
     }
   }
 
@@ -1476,8 +1497,14 @@ export function computeTeamMetrics(state) {
     ...r,
     possessionAvg: r.possessionCount > 0 ? r.possessionSum / r.possessionCount : null,
     shotsAvg: r.shotsCount > 0 ? r.shotsSum / r.shotsCount : null,
+    shotsAgainstAvg: r.shotsAgainstCount > 0 ? r.shotsAgainstSum / r.shotsAgainstCount : null,
     xGAvg: r.xGCount > 0 ? r.xGSum / r.xGCount : null,
-    xGDiff: r.xGCount > 0 ? r.goals - r.xGSum : null, // + = overperformer, - = underperformer
+    xGDiff: r.xGCount > 0 ? r.goals - r.xGSum : null, // + = marcou acima do xG
+    xGAgainstAvg: r.xGAgainstCount > 0 ? r.xGAgainstSum / r.xGAgainstCount : null,
+    goalsAgainstAvg: r.xGAgainstCount > 0 ? r.goalsAgainst / r.xGAgainstCount : null,
+    goalsAgainstXGDiff: r.xGAgainstCount > 0
+      ? (r.goalsAgainst / r.xGAgainstCount) - (r.xGAgainstSum / r.xGAgainstCount)
+      : null, // + = sofreu mais que o xG contra; - = sofreu menos
     conversionRate: (r.shotsSum > 0 && r.shotsCount > 0) ? (r.goals / r.shotsSum) * 100 : null,
   }));
   return rows;
@@ -1491,36 +1518,52 @@ export function computeOwnerMetrics(state) {
       owner: 'p1', name: state.player1Name || 'Jogador 1', teamsWithData: 0,
       possessionSum: 0, possessionCount: 0,
       shotsSum: 0, shotsCount: 0,
+      shotsAgainstSum: 0, shotsAgainstCount: 0,
       xGSum: 0, xGCount: 0, goals: 0,
+      xGAgainstSum: 0, xGAgainstCount: 0, goalsAgainst: 0,
     },
     p2: {
       owner: 'p2', name: state.player2Name || 'Jogador 2', teamsWithData: 0,
       possessionSum: 0, possessionCount: 0,
       shotsSum: 0, shotsCount: 0,
+      shotsAgainstSum: 0, shotsAgainstCount: 0,
       xGSum: 0, xGCount: 0, goals: 0,
+      xGAgainstSum: 0, xGAgainstCount: 0, goalsAgainst: 0,
     },
   };
 
   for (const row of computeTeamMetrics(state)) {
     const target = owners[row.owner];
     if (!target) continue;
-    const hasData = row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0;
+    const hasData = row.shotsCount > 0 || row.shotsAgainstCount > 0
+      || row.xGCount > 0 || row.xGAgainstCount > 0;
     if (hasData) target.teamsWithData++;
     target.possessionSum += row.possessionSum;
     target.possessionCount += row.possessionCount;
     target.shotsSum += row.shotsSum;
     target.shotsCount += row.shotsCount;
+    target.shotsAgainstSum += row.shotsAgainstSum;
+    target.shotsAgainstCount += row.shotsAgainstCount;
     target.xGSum += row.xGSum;
     target.xGCount += row.xGCount;
     target.goals += row.goals;
+    target.xGAgainstSum += row.xGAgainstSum;
+    target.xGAgainstCount += row.xGAgainstCount;
+    target.goalsAgainst += row.goalsAgainst;
   }
 
   return Object.values(owners).map((row) => ({
     ...row,
     possessionAvg: row.possessionCount > 0 ? row.possessionSum / row.possessionCount : null,
     shotsAvg: row.shotsCount > 0 ? row.shotsSum / row.shotsCount : null,
+    shotsAgainstAvg: row.shotsAgainstCount > 0 ? row.shotsAgainstSum / row.shotsAgainstCount : null,
     xGAvg: row.xGCount > 0 ? row.xGSum / row.xGCount : null,
     xGDiff: row.xGCount > 0 ? row.goals - row.xGSum : null,
+    xGAgainstAvg: row.xGAgainstCount > 0 ? row.xGAgainstSum / row.xGAgainstCount : null,
+    goalsAgainstAvg: row.xGAgainstCount > 0 ? row.goalsAgainst / row.xGAgainstCount : null,
+    goalsAgainstXGDiff: row.xGAgainstCount > 0
+      ? (row.goalsAgainst / row.xGAgainstCount) - (row.xGAgainstSum / row.xGAgainstCount)
+      : null,
   }));
 }
 
