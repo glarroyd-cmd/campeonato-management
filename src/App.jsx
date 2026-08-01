@@ -4640,12 +4640,13 @@ function AdvancedStatsView({ state, openTeam }) {
   );
   const rowsWithData = useMemo(() => (
     teamMetrics
-      .filter((row) => row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0)
-      .sort((a, b) => {
-        const aCount = a.possessionCount + a.shotsCount + a.xGCount;
-        const bCount = b.possessionCount + b.shotsCount + b.xGCount;
-        return bCount - aCount || b.xGSum - a.xGSum || a.name.localeCompare(b.name, 'pt-BR');
-      })
+      .filter((row) => row.shotsCount > 0 || row.shotsAgainstCount > 0
+        || row.xGCount > 0 || row.xGAgainstCount > 0)
+      .sort((a, b) => (
+        b.xGSum - a.xGSum
+        || (b.xGAvg ?? -1) - (a.xGAvg ?? -1)
+        || a.name.localeCompare(b.name, 'pt-BR')
+      ))
   ), [teamMetrics]);
 
   const hasData = rowsWithData.length > 0;
@@ -4658,8 +4659,8 @@ function AdvancedStatsView({ state, openTeam }) {
           <div>
             <h1 className="text-xl font-black">Estatísticas avançadas</h1>
             <p className="text-sm text-slate-400 mt-1">
-              Posse de bola, finalizações e xG consolidados por usuário e por time.
-              As médias consideram apenas os jogos em que cada métrica foi preenchida.
+              Produção ofensiva e defensiva de xG e finalizações por usuário e por time.
+              Os dados da prorrogação são somados ao tempo regulamentar e cada confronto continua valendo uma atuação.
             </p>
           </div>
         </div>
@@ -4670,7 +4671,7 @@ function AdvancedStatsView({ state, openTeam }) {
           <BarChart3 className="w-9 h-9 text-slate-600 mx-auto mb-3" />
           <h2 className="font-bold text-slate-300">Nenhuma estatística avançada preenchida</h2>
           <p className="text-sm text-slate-500 mt-2 max-w-xl mx-auto">
-            Abra um jogo e preencha posse, finalizações e xG no quadro de cada time.
+            Abra um jogo e preencha finalizações e xG no quadro de cada time.
             Assim que um jogo com esses dados for concluído, os comparativos aparecem aqui.
           </p>
         </Card>
@@ -4684,18 +4685,38 @@ function AdvancedStatsView({ state, openTeam }) {
   );
 }
 
+function signedMetric(value, digits = 2) {
+  if (value == null) return '—';
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
+}
+
+function attackingXGTone(diff) {
+  if (diff == null) return null;
+  if (diff > 0.5) return 'positive';
+  if (diff < -0.5) return 'negative';
+  return null;
+}
+
+function defensiveXGTone(diff) {
+  if (diff == null) return null;
+  if (diff < -0.15) return 'positive';
+  if (diff > 0.15) return 'negative';
+  return null;
+}
+
 function AdvancedOwnerMetricsSection({ state, rows }) {
   return (
     <section>
       <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
         <Users className="w-4 h-4" /> Por usuário
       </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3">
         {rows.map((row) => {
           const color = row.owner === 'p1'
             ? (state.player1Color || '#06b6d4')
             : (state.player2Color || '#f59e0b');
-          const hasData = row.possessionCount > 0 || row.shotsCount > 0 || row.xGCount > 0;
+          const hasData = row.shotsCount > 0 || row.shotsAgainstCount > 0
+            || row.xGCount > 0 || row.xGAgainstCount > 0;
           return (
             <Card
               key={row.owner}
@@ -4711,27 +4732,47 @@ function AdvancedOwnerMetricsSection({ state, rows }) {
               {!hasData ? (
                 <div className="text-xs text-slate-500 italic">Sem métricas preenchidas.</div>
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-2">
                   <AdvancedMetricCell
-                    label="Posse média"
-                    value={row.possessionAvg == null ? '—' : `${row.possessionAvg.toFixed(1)}%`}
-                    detail={row.possessionCount > 0 ? `${row.possessionCount} atuações` : 'sem dados'}
-                  />
-                  <AdvancedMetricCell
-                    label="Finalizações"
-                    value={row.shotsCount > 0 ? row.shotsSum : '—'}
-                    detail={row.shotsAvg == null ? 'sem dados' : `${row.shotsAvg.toFixed(1)} por jogo`}
-                  />
-                  <AdvancedMetricCell
-                    label="xG"
+                    label="xG total"
                     value={row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}
-                    detail={row.xGAvg == null ? 'sem dados' : `${row.xGAvg.toFixed(2)} por jogo`}
+                    detail={row.xGCount > 0 ? `${row.xGCount} atuações` : 'sem dados'}
                   />
                   <AdvancedMetricCell
-                    label="Gols − xG"
-                    value={row.xGDiff == null ? '—' : `${row.xGDiff > 0 ? '+' : ''}${row.xGDiff.toFixed(2)}`}
-                    detail={row.xGCount > 0 ? `${row.goals} gols nos jogos com xG` : 'sem dados'}
-                    tone={row.xGDiff == null ? null : row.xGDiff > 0.5 ? 'positive' : row.xGDiff < -0.5 ? 'negative' : null}
+                    label="Média de xG"
+                    value={row.xGAvg == null ? '—' : row.xGAvg.toFixed(2)}
+                    detail={row.xGAvg == null ? 'sem dados' : 'por atuação'}
+                  />
+                  <AdvancedMetricCell
+                    label="Gols vs xG"
+                    value={row.xGCount > 0 ? `${row.goals} / ${row.xGSum.toFixed(2)}` : '—'}
+                    detail={row.xGDiff == null ? 'sem dados' : `${signedMetric(row.xGDiff)} sobre o esperado`}
+                    tone={attackingXGTone(row.xGDiff)}
+                  />
+                  <AdvancedMetricCell
+                    label="Média de xG contra"
+                    value={row.xGAgainstAvg == null ? '—' : row.xGAgainstAvg.toFixed(2)}
+                    detail={row.xGAgainstCount > 0 ? `${row.xGAgainstCount} atuações` : 'sem dados'}
+                  />
+                  <AdvancedMetricCell
+                    label="GC médio vs xG contra"
+                    value={row.goalsAgainstAvg == null || row.xGAgainstAvg == null
+                      ? '—'
+                      : `${row.goalsAgainstAvg.toFixed(2)} / ${row.xGAgainstAvg.toFixed(2)}`}
+                    detail={row.goalsAgainstXGDiff == null
+                      ? 'sem dados'
+                      : `${signedMetric(row.goalsAgainstXGDiff)} vs esperado`}
+                    tone={defensiveXGTone(row.goalsAgainstXGDiff)}
+                  />
+                  <AdvancedMetricCell
+                    label="Média de finalizações"
+                    value={row.shotsAvg == null ? '—' : row.shotsAvg.toFixed(1)}
+                    detail={row.shotsCount > 0 ? `${row.shotsCount} atuações` : 'sem dados'}
+                  />
+                  <AdvancedMetricCell
+                    label="Média de finalizações contra"
+                    value={row.shotsAgainstAvg == null ? '—' : row.shotsAgainstAvg.toFixed(1)}
+                    detail={row.shotsAgainstCount > 0 ? `${row.shotsAgainstCount} atuações` : 'sem dados'}
                   />
                 </div>
               )}
@@ -4751,9 +4792,9 @@ function AdvancedMetricCell({ label, value, detail, tone }) {
       : 'text-slate-100';
   return (
     <div className="rounded-lg border border-slate-800/70 bg-slate-950/35 p-2.5 min-w-0">
-      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold truncate">{label}</div>
-      <div className={cls('text-lg font-black tabular-nums mt-0.5', valueClass)}>{value}</div>
-      <div className="text-[9px] text-slate-600 mt-0.5 leading-tight">{detail}</div>
+      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold leading-tight min-h-[22px]">{label}</div>
+      <div className={cls('text-lg font-black tabular-nums mt-0.5 whitespace-nowrap', valueClass)}>{value}</div>
+      <div className="text-[9px] text-slate-600 mt-0.5 leading-tight min-h-[20px]">{detail}</div>
     </div>
   );
 }
@@ -4767,27 +4808,35 @@ function AdvancedTeamMetricsTable({ state, rows, openTeam }) {
       </h2>
       <Card className="p-3">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-xs">
+          <table className="w-full min-w-[1320px] text-xs">
             <thead className="text-slate-500">
               <tr className="border-b border-slate-800">
                 <th className="text-left pb-2 pr-2 w-8">#</th>
                 <th className="text-left pb-2 pr-3">Time</th>
                 <th className="text-left pb-2 pr-3">Usuário</th>
-                <th className="text-right pb-2 px-2">Posse média</th>
-                <th className="text-right pb-2 px-2">Finalizações</th>
-                <th className="text-right pb-2 px-2">xG</th>
-                <th className="text-right pb-2 pl-2">Gols − xG</th>
+                <th className="text-right pb-2 px-2">xG total</th>
+                <th className="text-right pb-2 px-2">Média xG</th>
+                <th className="text-right pb-2 px-2">Gols vs xG</th>
+                <th className="text-right pb-2 px-2">Média xG contra</th>
+                <th className="text-right pb-2 px-2">GC médio vs xG contra</th>
+                <th className="text-right pb-2 px-2">Média finalizações</th>
+                <th className="text-right pb-2 pl-2">Média finalizações contra</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, index) => {
-                const diffTone = row.xGDiff == null
-                  ? 'text-slate-500'
-                  : row.xGDiff > 0.5
-                    ? 'text-emerald-400'
-                    : row.xGDiff < -0.5
-                      ? 'text-red-400'
-                      : 'text-slate-300';
+                const attackTone = attackingXGTone(row.xGDiff);
+                const defenseTone = defensiveXGTone(row.goalsAgainstXGDiff);
+                const attackClass = attackTone === 'positive'
+                  ? 'text-emerald-400'
+                  : attackTone === 'negative'
+                    ? 'text-red-400'
+                    : 'text-slate-300';
+                const defenseClass = defenseTone === 'positive'
+                  ? 'text-emerald-400'
+                  : defenseTone === 'negative'
+                    ? 'text-red-400'
+                    : 'text-slate-300';
                 return (
                   <tr key={row.teamId} className="border-b border-slate-800/50 last:border-0">
                     <td className="py-2 pr-2 font-bold tabular-nums text-slate-500">{index + 1}</td>
@@ -4811,19 +4860,33 @@ function AdvancedTeamMetricsTable({ state, rows, openTeam }) {
                       />
                     </td>
                     <td className="py-2 px-2 text-right tabular-nums">
-                      <div className="font-bold">{row.possessionAvg == null ? '—' : `${row.possessionAvg.toFixed(1)}%`}</div>
-                      <div className="text-[9px] text-slate-600">{row.possessionCount > 0 ? `${row.possessionCount}j` : ''}</div>
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      <div className="font-bold">{row.shotsCount > 0 ? row.shotsSum : '—'}</div>
-                      <div className="text-[9px] text-slate-600">{row.shotsAvg == null ? '' : `${row.shotsAvg.toFixed(1)}/j`}</div>
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums">
                       <div className="font-bold">{row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}</div>
-                      <div className="text-[9px] text-slate-600">{row.xGAvg == null ? '' : `${row.xGAvg.toFixed(2)}/j`}</div>
+                      <div className="text-[9px] text-slate-600">{row.xGCount > 0 ? `${row.xGCount}j` : ''}</div>
                     </td>
-                    <td className={cls('py-2 pl-2 text-right tabular-nums font-black', diffTone)}>
-                      {row.xGDiff == null ? '—' : `${row.xGDiff > 0 ? '+' : ''}${row.xGDiff.toFixed(2)}`}
+                    <td className="py-2 px-2 text-right tabular-nums font-bold">
+                      {row.xGAvg == null ? '—' : row.xGAvg.toFixed(2)}
+                    </td>
+                    <td className={cls('py-2 px-2 text-right tabular-nums font-black', attackClass)}>
+                      <div>{row.xGCount > 0 ? `${row.goals} / ${row.xGSum.toFixed(2)}` : '—'}</div>
+                      <div className="text-[9px] font-normal opacity-70">{row.xGDiff == null ? '' : signedMetric(row.xGDiff)}</div>
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums">
+                      <div className="font-bold">{row.xGAgainstAvg == null ? '—' : row.xGAgainstAvg.toFixed(2)}</div>
+                      <div className="text-[9px] text-slate-600">{row.xGAgainstCount > 0 ? `${row.xGAgainstCount}j` : ''}</div>
+                    </td>
+                    <td className={cls('py-2 px-2 text-right tabular-nums font-black', defenseClass)}>
+                      <div>{row.goalsAgainstAvg == null || row.xGAgainstAvg == null
+                        ? '—'
+                        : `${row.goalsAgainstAvg.toFixed(2)} / ${row.xGAgainstAvg.toFixed(2)}`}</div>
+                      <div className="text-[9px] font-normal opacity-70">
+                        {row.goalsAgainstXGDiff == null ? '' : signedMetric(row.goalsAgainstXGDiff)}
+                      </div>
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums font-bold">
+                      {row.shotsAvg == null ? '—' : row.shotsAvg.toFixed(1)}
+                    </td>
+                    <td className="py-2 pl-2 text-right tabular-nums font-bold">
+                      {row.shotsAgainstAvg == null ? '—' : row.shotsAgainstAvg.toFixed(1)}
                     </td>
                   </tr>
                 );
@@ -4832,7 +4895,7 @@ function AdvancedTeamMetricsTable({ state, rows, openTeam }) {
           </table>
         </div>
         <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
-          “j” representa o número de atuações do time com aquela métrica preenchida. Dados ausentes não entram nas médias.
+          “j” representa o número de atuações com aquele dado preenchido. Em “Gols vs xG”, valores positivos indicam gols acima do esperado. Em “GC médio vs xG contra”, valores negativos indicam menos gols sofridos que o esperado.
         </div>
       </Card>
     </section>
