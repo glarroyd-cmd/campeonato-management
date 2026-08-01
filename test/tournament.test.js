@@ -392,12 +392,20 @@ test('estatísticas avançadas são agregadas por usuário sem misturar dados au
   assert.equal(p1.name, 'Ana');
   assert.equal(p1.possessionAvg, 58);
   assert.equal(p1.shotsSum, 14);
+  assert.equal(p1.shotsAgainstAvg, 7);
   assert.equal(p1.xGSum, 1.75);
   assert.equal(p1.xGDiff, 0.25);
+  assert.equal(p1.xGAgainstAvg, 0.80);
+  assert.equal(p1.goalsAgainstAvg, 1);
+  assert.ok(Math.abs(p1.goalsAgainstXGDiff - 0.2) < 1e-9);
   assert.equal(p2.name, 'Bruno');
   assert.equal(p2.possessionAvg, 42);
   assert.equal(p2.shotsAvg, 7);
+  assert.equal(p2.shotsAgainstAvg, 14);
   assert.ok(Math.abs(p2.xGDiff - 0.2) < 1e-9);
+  assert.equal(p2.xGAgainstAvg, 1.75);
+  assert.equal(p2.goalsAgainstAvg, 2);
+  assert.equal(p2.goalsAgainstXGDiff, 0.25);
 });
 
 test('estatísticas avançadas somam xG e finalizações da prorrogação e ponderam a posse', () => {
@@ -457,27 +465,47 @@ test('estatísticas avançadas somam xG e finalizações da prorrogação e pond
 
   assert.equal(ko1.shotsSum, 14);
   assert.equal(ko1.shotsCount, 1);
+  assert.equal(ko1.shotsAgainstSum, 8);
+  assert.equal(ko1.shotsAgainstAvg, 8);
   assert.ok(Math.abs(ko1.xGSum - 1.8) < 1e-9);
   assert.equal(ko1.xGCount, 1);
   assert.equal(ko1.goals, 2);
   assert.ok(Math.abs(ko1.xGDiff - 0.2) < 1e-9);
+  assert.ok(Math.abs(ko1.xGAgainstSum - 0.9) < 1e-9);
+  assert.ok(Math.abs(ko1.xGAgainstAvg - 0.9) < 1e-9);
+  assert.equal(ko1.goalsAgainst, 1);
+  assert.equal(ko1.goalsAgainstAvg, 1);
+  assert.ok(Math.abs(ko1.goalsAgainstXGDiff - 0.1) < 1e-9);
   assert.equal(ko1.possessionAvg, 58.75);
   assert.equal(ko1.possessionCount, 1);
 
   assert.equal(ko2.shotsSum, 8);
+  assert.equal(ko2.shotsAgainstSum, 14);
+  assert.equal(ko2.shotsAgainstAvg, 14);
   assert.ok(Math.abs(ko2.xGSum - 0.9) < 1e-9);
   assert.equal(ko2.goals, 1);
   assert.ok(Math.abs(ko2.xGDiff - 0.1) < 1e-9);
+  assert.ok(Math.abs(ko2.xGAgainstSum - 1.8) < 1e-9);
+  assert.ok(Math.abs(ko2.xGAgainstAvg - 1.8) < 1e-9);
+  assert.equal(ko2.goalsAgainst, 2);
+  assert.equal(ko2.goalsAgainstAvg, 2);
+  assert.ok(Math.abs(ko2.goalsAgainstXGDiff - 0.2) < 1e-9);
   assert.equal(ko2.possessionAvg, 41.25);
 
   const owners = computeOwnerMetrics(state);
   const p1 = owners.find((row) => row.owner === 'p1');
   const p2 = owners.find((row) => row.owner === 'p2');
   assert.equal(p1.shotsSum, 14);
+  assert.equal(p1.shotsAgainstAvg, 8);
   assert.ok(Math.abs(p1.xGSum - 1.8) < 1e-9);
+  assert.ok(Math.abs(p1.xGAgainstAvg - 0.9) < 1e-9);
+  assert.equal(p1.goalsAgainstAvg, 1);
   assert.equal(p1.possessionAvg, 58.75);
   assert.equal(p2.shotsSum, 8);
+  assert.equal(p2.shotsAgainstAvg, 14);
   assert.ok(Math.abs(p2.xGSum - 0.9) < 1e-9);
+  assert.ok(Math.abs(p2.xGAgainstAvg - 1.8) < 1e-9);
+  assert.equal(p2.goalsAgainstAvg, 2);
   assert.equal(p2.possessionAvg, 41.25);
 });
 
