@@ -1009,11 +1009,61 @@ function shuffle(arr) {
    Depois aplica greedy swaps pra reduzir os restantes. */
 function shuffleAvoidingSameOwner(teamIds, getOwner) {
   if (teamIds.length < 2) return [...teamIds];
+  const countConflicts = (arr) => {
+    let c = 0;
+    for (let i = 0; i < arr.length; i += 2) {
+      const o1 = getOwner(arr[i]);
+      const o2 = getOwner(arr[i + 1]);
+      if (o1 && o2 && o1 === o2) c++;
+    }
+    return c;
+  };
+  let best = [...teamIds];
+  let bestConflicts = countConflicts(best);
+  for (let attempt = 0; attempt < 50 && bestConflicts > 0; attempt++) {
+    const trial = shuffle([...teamIds]);
+    const c = countConflicts(trial);
+    if (c < bestConflicts) {
+      best = trial;
+      bestConflicts = c;
+    }
+  }
+  /* Greedy swaps: pra cada conflito, tenta trocar com outro par sem criar novo conflito */
+  if (bestConflicts > 0) {
+    for (let i = 0; i < best.length; i += 2) {
+      const o1 = getOwner(best[i]);
+      const o2 = getOwner(best[i + 1]);
+      if (!o1 || !o2 || o1 !== o2) continue;
+      /* tenta trocar best[i+1] com algum elemento de outro par sem conflito */
+      for (let j = 0; j < best.length; j += 2) {
+        if (j === i) continue;
+        const jo1 = getOwner(best[j]);
+        const jo2 = getOwner(best[j + 1]);
+        if (jo1 === jo2) continue; // outro par tb com conflito? pula
+        /* tenta trocar best[i+1] <-> best[j] */
+        const ni = getOwner(best[i]) === getOwner(best[j]); // novo i tem conflito?
+        const nj = getOwner(best[i + 1]) === getOwner(best[j + 1]); // novo j tem conflito?
+        if (!ni && !nj) {
+          [best[i + 1], best[j]] = [best[j], best[i + 1]];
+          break;
+        }
+        /* tenta trocar best[i+1] <-> best[j+1] */
+        const ni2 = getOwner(best[i]) === getOwner(best[j + 1]);
+        const nj2 = getOwner(best[j]) === getOwner(best[i + 1]);
+        if (!ni2 && !nj2) {
+          [best[i + 1], best[j + 1]] = [best[j + 1], best[i + 1]];
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
 
-  /* Agrupa por dono. Times sem dono recebem uma chave própria, pois podem
-     enfrentar qualquer pessoa sem gerar conflito. Ao sempre parear os dois
-     maiores grupos de donos distintos, garantimos zero conflitos quando uma
-     solução matemática existe (ex.: 16 times do Pedro + 16 do Guilherme). */
+/* Sorteio completo do mata-mata: usa buckets por dono para garantir
+   adversários diferentes sempre que houver uma combinação matemática válida. */
+function shuffleAllAvoidingSameOwner(teamIds, getOwner) {
+  if (teamIds.length < 2) return [...teamIds];
   const groups = new Map();
   teamIds.forEach((teamId, idx) => {
     const owner = getOwner(teamId);
@@ -1021,42 +1071,29 @@ function shuffleAvoidingSameOwner(teamIds, getOwner) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(teamId);
   });
-
-  const buckets = [...groups.entries()].map(([key, ids]) => ({
-    key,
-    ids: shuffle([...ids]),
-    tie: Math.random(),
-  }));
+  const buckets = [...groups.entries()].map(([key, ids]) => ({ key, ids: shuffle([...ids]), tie: Math.random() }));
   const result = [];
-
   while (true) {
     const active = buckets.filter((b) => b.ids.length > 0);
     if (active.length === 0) break;
-
-    /* Se só restou um dono, conflitos são inevitáveis. */
     if (active.length === 1) {
-      const rest = shuffle([...active[0].ids]);
-      result.push(...rest);
+      result.push(...shuffle([...active[0].ids]));
       active[0].ids.length = 0;
       break;
     }
-
     active.sort((a, b) => (b.ids.length - a.ids.length) || (a.tie - b.tie));
     const first = active[0];
     const second = active[1];
     const a = first.ids.pop();
     const b = second.ids.pop();
-
-    /* Randomiza também quem fica como mandante na primeira perna. */
     if (Math.random() < 0.5) result.push(a, b);
     else result.push(b, a);
-
     first.tie = Math.random();
     second.tie = Math.random();
   }
-
   return result;
 }
+
 
 /* ============================================================
    PROPAGAÇÃO DE VENCEDORES NO MATA-MATA
@@ -2720,7 +2757,7 @@ export function reshuffleAllKnockoutConfronts(state) {
   }
 
   const getOwner = (teamId) => getTeamById(state, teamId)?.owner || null;
-  const shuffledIds = shuffleAvoidingSameOwner(teamIds, getOwner);
+  const shuffledIds = shuffleAllAvoidingSameOwner(teamIds, getOwner);
 
   let conflicts = 0;
   for (let i = 0; i < shuffledIds.length; i += 2) {
