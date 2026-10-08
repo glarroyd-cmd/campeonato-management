@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   Trophy, Users, Calendar, BarChart3, ChevronRight, ChevronLeft,
   Edit2, Check, X, Plus, AlertTriangle, Award, Target, Camera,
-  Loader2, ArrowLeftRight, Star,
+  Loader2, ArrowLeftRight, Star, RefreshCw,
   Goal, Hand, FileText, ArrowRight, ChevronDown, ChevronUp,
   Link2, LogOut, Copy, Home as HomeIcon, ArrowUp, ArrowDown,
   Settings2, Shuffle, Crown, Clock, Zap,
@@ -11,7 +11,6 @@ import { supabase, clientId, supabaseReady, supabaseConfig } from './lib/supabas
 import {
   getLocalHistory, rememberTournament, forgetTournament,
 } from './lib/localHistory.js';
-import { mergeTournamentStates, jsonEqual } from './lib/syncMerge.js';
 import {
   FORMATS, getFormat, STAGE_LABELS, STAGE_ORDER_INDEX, TIEBREAKERS,
   CARD_RULE_LABELS, DEFAULT_TIEBREAKERS, POSITIONS,
@@ -19,6 +18,7 @@ import {
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
   autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
   repairKnockoutBracket, regenerateKnockoutBracket,
+  canChangeKnockoutReturn, reconfigureKnockoutReturn,
   getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
   computeBestThirds, getPlayerPosition,
   computeHeadToHead, getUpcomingMatches, getNotablePlayersForTeam,
@@ -28,9 +28,9 @@ import {
   computeTeamStreaks, computeCleanSheets, computeOffensiveDependency, computeTournamentSurprises,
   computeGroupScenarios, computeGroupTeamStatus, computeGroupMinimumNeeds,
   computeGroupTeamsOverview, computeAllSuspended,
-  computeTeamMetrics, computeOwnerMetrics,
+  computeTeamMetrics, computeGoalkeeperRankings,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
-  reshuffleSameOwnerKnockout, getSameOwnerKnockoutSwapOptions,
+  reshuffleSameOwnerKnockout,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -47,11 +47,11 @@ function generateCode() {
 async function loadTournament(code) {
   const { data, error } = await supabase
     .from('tournaments')
-    .select('state, updated_at')
+    .select('state')
     .eq('code', code)
     .maybeSingle();
   if (error) { console.error(error); return null; }
-  return data ? { state: data.state, updatedAt: data.updated_at } : null;
+  return data ? data.state : null;
 }
 
 async function loadTournamentList(codes) {
@@ -81,26 +81,10 @@ async function createTournamentRow(name, formatId) {
   return null;
 }
 
-async function saveTournament(code, state, expectedUpdatedAt) {
+async function saveTournament(code, state) {
   const stateWithMeta = { ...state, _meta: { lastUpdater: clientId, updatedAt: Date.now() } };
-  let query = supabase
-    .from('tournaments')
-    .update({ state: stateWithMeta })
-    .eq('code', code);
-  if (expectedUpdatedAt) query = query.eq('updated_at', expectedUpdatedAt);
-
-  const { data, error } = await query
-    .select('state, updated_at')
-    .maybeSingle();
-  if (error) {
-    console.error(error);
-    return { ok: false, error };
-  }
-  if (data) return { ok: true, updatedAt: data.updated_at, state: data.state };
-
-  /* Nenhuma linha atualizada: outra pessoa salvou a partir da mesma versão. */
-  const latest = await loadTournament(code);
-  return { ok: false, conflict: true, remote: latest };
+  const { error } = await supabase.from('tournaments').update({ state: stateWithMeta }).eq('code', code);
+  if (error) console.error(error);
 }
 
 /* ============================================================
@@ -130,37 +114,6 @@ function Card({ children, className = '' }) {
   return (
     <div className={cls('bg-slate-900/60 border border-slate-800 rounded-xl', className)}>
       {children}
-    </div>
-  );
-}
-
-function SyncConflictBanner({ onUseRemote, onKeepLocal, conflictCount = 0 }) {
-  return (
-    <div className="fixed inset-x-3 top-3 z-[100] max-w-2xl mx-auto p-4 rounded-xl border border-amber-500/60 bg-slate-950/95 shadow-2xl backdrop-blur">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <p className="font-bold text-amber-200">Duas versões foram editadas ao mesmo tempo</p>
-          <p className="text-sm text-slate-300 mt-1">
-            As alterações independentes já foram combinadas. Existem {conflictCount || 'alguns'} campo(s)
-            preenchidos de formas diferentes nos dois dispositivos; escolha qual versão deve prevalecer nesses campos.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-2 mt-3">
-            <button
-              onClick={onUseRemote}
-              className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-bold"
-            >
-              Carregar versão recebida
-            </button>
-            <button
-              onClick={onKeepLocal}
-              className="px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black"
-            >
-              Manter dados combinados
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -214,54 +167,9 @@ export default function App() {
   const [view, setView] = useState('groups');
   const [activeMatchId, setActiveMatchId] = useState(null);
   const [activeTeamId, setActiveTeamId] = useState(null);
-  const [syncConflict, setSyncConflict] = useState(null);
-  const stateRef = useRef(null);
-  const serverUpdatedAtRef = useRef(null);
-  const serverStateRef = useRef(null);
-  const dirtyRef = useRef(false);
-  const savingRef = useRef(false);
-  const saveQueuedRef = useRef(false);
-  const localRevisionRef = useRef(0);
-  const pendingRemoteRef = useRef(null);
-  const syncConflictRef = useRef(false);
-  const flushSaveRef = useRef(null);
   const openTeam = useCallback((teamId, fromView) => {
     setActiveTeamId(teamId);
     setView('team');
-  }, []);
-
-  /* Combina uma atualização remota com alterações locais sem permitir que
-     campos vazios de uma aba antiga apaguem dados já preenchidos. */
-  const mergeRemoteIntoLocal = useCallback((remote) => {
-    if (!remote?.state) return;
-    const base = serverStateRef.current || remote.state;
-    const local = stateRef.current || base;
-    const merged = mergeTournamentStates(base, local, remote.state);
-    const mergedState = merged.state;
-    const hasLocalChanges = !jsonEqual(mergedState, remote.state);
-
-    serverStateRef.current = remote.state;
-    serverUpdatedAtRef.current = remote.updatedAt;
-    stateRef.current = mergedState;
-    localRevisionRef.current += 1;
-    dirtyRef.current = hasLocalChanges;
-    setState(mergedState);
-
-    if (merged.conflicts.length > 0) {
-      const pending = { ...remote, mergedState, conflicts: merged.conflicts };
-      pendingRemoteRef.current = pending;
-      syncConflictRef.current = true;
-      setSyncConflict(pending);
-      return;
-    }
-
-    pendingRemoteRef.current = null;
-    syncConflictRef.current = false;
-    setSyncConflict(null);
-    if (hasLocalChanges) {
-      saveQueuedRef.current = true;
-      if (!savingRef.current) setTimeout(() => flushSaveRef.current?.(), 0);
-    }
   }, []);
 
   /* Carrega torneio quando code muda */
@@ -271,61 +179,27 @@ export default function App() {
     let cancelled = false;
     (async () => {
       setLoading(true); setLoadError(null);
-      const loadedRow = await loadTournament(code);
+      const loaded = await loadTournament(code);
       if (cancelled) return;
-      if (!loadedRow) {
+      if (!loaded) {
         setLoadError(`Torneio "${code}" não encontrado.`);
         setLoading(false);
         return;
       }
-      const loaded = loadedRow.state;
-      serverUpdatedAtRef.current = loadedRow.updatedAt;
-      serverStateRef.current = loaded;
-      dirtyRef.current = false;
-      pendingRemoteRef.current = null;
-      syncConflictRef.current = false;
-      setSyncConflict(null);
-
-      /* Normaliza silenciosamente a chave ao abrir o torneio. Isso corrige
-         duplicatas e migra chaves antigas da Copa 2026 sem recriar o torneio. */
-      let normalizedState = loaded;
-      let normalizedChanged = false;
-      const knockoutStarted = (normalizedState.matches || []).some((m) => m.stage !== 'group' && m.played);
-
-      /* Migra/repara a chave somente antes do primeiro jogo do mata-mata.
-         Campeonatos eliminatórios já iniciados ficam integralmente congelados. */
-      if (!knockoutStarted) {
-        const repaired = repairKnockoutBracket(normalizedState);
-        if (repaired.cleared > 0) {
-          console.warn(`[Reparo automático] Removi ${repaired.cleared} slot(s) duplicado(s) do mata-mata.`);
-          normalizedState = { ...normalizedState, matches: repaired.matches };
-          normalizedChanged = true;
-        }
-        const reseeded = recalcKnockoutSeeding(normalizedState);
-        if (reseeded.changed) {
-          normalizedState = { ...normalizedState, matches: reseeded.matches };
-          normalizedChanged = true;
-        }
-      }
-      const propagated = propagateKnockoutWinners(normalizedState.matches || []);
-      if (propagated.changed) {
-        normalizedState = { ...normalizedState, matches: propagated.matches };
-        normalizedChanged = true;
-      }
-      if (normalizedChanged) {
-        dirtyRef.current = true;
-        localRevisionRef.current += 1;
-      }
-
-      stateRef.current = normalizedState;
-      setState(normalizedState);
+      setState(loaded);
       rememberTournament({ code });
       /* Decide view inicial baseado em estado de setup */
-      if (!normalizedState.setupComplete) setView('setup');
-      else if (!normalizedState.rulesComplete) setView('rules');
-      else if (!normalizedState.teamsComplete) setView('teamsSetup');
+      if (!loaded.setupComplete) setView('setup');
+      else if (!loaded.rulesComplete) setView('rules');
+      else if (!loaded.teamsComplete) setView('teamsSetup');
       else setView('groups');
       setLoading(false);
+      /* Reparo automático: se detectar duplicatas no bracket, corrige silenciosamente */
+      const repaired = repairKnockoutBracket(loaded);
+      if (repaired.cleared > 0) {
+        console.warn(`[Reparo automático] Removi ${repaired.cleared} slot(s) duplicado(s) do mata-mata.`);
+        setState({ ...loaded, matches: repaired.matches });
+      }
 
       channel = supabase
         .channel(`tournament-${code}`)
@@ -334,23 +208,8 @@ export default function App() {
           { event: 'UPDATE', schema: 'public', table: 'tournaments', filter: `code=eq.${code}` },
           (payload) => {
             const newState = payload.new?.state;
-            const newUpdatedAt = payload.new?.updated_at;
             if (!newState) return;
-            if (newState._meta && newState._meta.lastUpdater === clientId) {
-              if (newUpdatedAt) serverUpdatedAtRef.current = newUpdatedAt;
-              serverStateRef.current = newState;
-              return;
-            }
-
-            const remote = { state: newState, updatedAt: newUpdatedAt };
-            if (dirtyRef.current || savingRef.current) {
-              mergeRemoteIntoLocal(remote);
-              return;
-            }
-
-            serverUpdatedAtRef.current = newUpdatedAt;
-            serverStateRef.current = newState;
-            stateRef.current = newState;
+            if (newState._meta && newState._meta.lastUpdater === clientId) return;
             setState(newState);
           }
         )
@@ -360,54 +219,16 @@ export default function App() {
       cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
-  }, [code, mergeRemoteIntoLocal]);
+  }, [code]);
 
-  /* Mantém uma referência para o snapshot mais recente. */
-  useEffect(() => { stateRef.current = state; }, [state]);
-
-  /* Auto-save com debounce + bloqueio otimista por updated_at. */
+  /* Auto-salvar com debounce */
   const saveTimerRef = useRef(null);
-  const flushSave = useCallback(async () => {
-    if (!code || loading || !dirtyRef.current || syncConflictRef.current) return;
-    if (savingRef.current) {
-      saveQueuedRef.current = true;
-      return;
-    }
-
-    const snapshot = stateRef.current;
-    if (!snapshot) return;
-    savingRef.current = true;
-    const savedRevision = localRevisionRef.current;
-    const result = await saveTournament(code, snapshot, serverUpdatedAtRef.current);
-
-    if (result.ok) {
-      serverUpdatedAtRef.current = result.updatedAt;
-      serverStateRef.current = result.state || snapshot;
-      if (localRevisionRef.current === savedRevision) {
-        dirtyRef.current = false;
-      } else {
-        saveQueuedRef.current = true;
-      }
-    } else if (result.conflict && result.remote) {
-      mergeRemoteIntoLocal(result.remote);
-    }
-
-    savingRef.current = false;
-    if (saveQueuedRef.current && !syncConflictRef.current) {
-      saveQueuedRef.current = false;
-      setTimeout(() => flushSaveRef.current?.(), 0);
-    }
-  }, [code, loading, mergeRemoteIntoLocal]);
-  flushSaveRef.current = flushSave;
-
   useEffect(() => {
-    if (!state || !code || loading || !dirtyRef.current || syncConflictRef.current) return;
+    if (!state || !code || loading) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => { flushSaveRef.current?.(); }, 400);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [state, code, loading, flushSave]);
+    saveTimerRef.current = setTimeout(() => { saveTournament(code, state); }, 400);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [state, code, loading]);
 
   /* Sincroniza URL hash */
   useEffect(() => {
@@ -419,22 +240,8 @@ export default function App() {
     }
   }, [code]);
 
-  const markLocalChange = useCallback(() => {
-    dirtyRef.current = true;
-    localRevisionRef.current += 1;
-  }, []);
-
-  const update = useCallback((partial) => {
-    markLocalChange();
-    setState((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev, ...partial };
-      stateRef.current = next;
-      return next;
-    });
-  }, [markLocalChange]);
+  const update = useCallback((partial) => setState((prev) => prev ? ({ ...prev, ...partial }) : prev), []);
   const updateMatches = useCallback((newMatches) => {
-    markLocalChange();
     setState((prev) => {
       if (!prev) return prev;
       let intermediate = { ...prev, matches: newMatches };
@@ -446,61 +253,14 @@ export default function App() {
       intermediate = { ...intermediate, matches: afterRepair };
       /* 3. Propaga vencedores no KO */
       const { matches: afterPropagation } = propagateKnockoutWinners(intermediate.matches);
-      const next = { ...intermediate, matches: afterPropagation };
-      stateRef.current = next;
-      return next;
+      return { ...intermediate, matches: afterPropagation };
     });
-  }, [markLocalChange]);
-
-  const useRemoteVersion = useCallback(() => {
-    const remote = pendingRemoteRef.current;
-    if (!remote) return;
-    serverUpdatedAtRef.current = remote.updatedAt;
-    serverStateRef.current = remote.state;
-    dirtyRef.current = false;
-    saveQueuedRef.current = false;
-    pendingRemoteRef.current = null;
-    syncConflictRef.current = false;
-    localRevisionRef.current += 1;
-    stateRef.current = remote.state;
-    setState(remote.state);
-    setSyncConflict(null);
-  }, []);
-
-  const keepLocalVersion = useCallback(() => {
-    const pending = pendingRemoteRef.current;
-    if (!pending) return;
-    const mergedState = pending.mergedState || stateRef.current;
-    serverUpdatedAtRef.current = pending.updatedAt;
-    serverStateRef.current = pending.state;
-    pendingRemoteRef.current = null;
-    syncConflictRef.current = false;
-    dirtyRef.current = !jsonEqual(mergedState, pending.state);
-    localRevisionRef.current += 1;
-    stateRef.current = mergedState;
-    setState(mergedState);
-    setSyncConflict(null);
-    if (dirtyRef.current) setTimeout(() => flushSaveRef.current?.(), 0);
   }, []);
 
   const leave = useCallback(() => {
-    dirtyRef.current = false;
-    serverStateRef.current = null;
-    serverUpdatedAtRef.current = null;
-    pendingRemoteRef.current = null;
-    syncConflictRef.current = false;
-    setSyncConflict(null);
     setCode(null);
     setState(null);
   }, []);
-
-  const conflictBanner = syncConflict ? (
-    <SyncConflictBanner
-      onUseRemote={useRemoteVersion}
-      onKeepLocal={keepLocalVersion}
-      conflictCount={syncConflict.conflicts?.length || 0}
-    />
-  ) : null;
 
   if (!code) {
     return <HomeView onOpen={(c) => setCode(c)} initialError={loadError} />;
@@ -524,25 +284,24 @@ export default function App() {
 
   /* Wizard de setup — sequencial */
   if (!state.setupComplete) {
-    return <><SetupPlayersView state={state} update={update} code={code} onLeave={leave} />{conflictBanner}</>;
+    return <SetupPlayersView state={state} update={update} code={code} onLeave={leave} />;
   }
   if (!state.rulesComplete) {
-    return <><RulesSetupView state={state} update={update} code={code} onLeave={leave} />{conflictBanner}</>;
+    return <RulesSetupView state={state} update={update} code={code} onLeave={leave} />;
   }
   if (!state.teamsComplete) {
-    return <><TeamsSetupView state={state} update={update} updateMatches={updateMatches} code={code} onLeave={leave} />{conflictBanner}</>;
+    return <TeamsSetupView state={state} update={update} updateMatches={updateMatches} code={code} onLeave={leave} />;
   }
 
   const allTeams = getAllTeams(state);
 
   /* Garante que view esteja numa tab válida depois do wizard */
-  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats', 'advanced-stats', 'team'];
+  const validTabs = ['groups', 'matches', 'match', 'knockout', 'stats', 'team'];
   const safeView = validTabs.includes(view) ? view : 'groups';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <Header state={state} view={safeView} setView={setView} code={code} onLeave={leave} />
-      {conflictBanner}
       <main className="max-w-7xl mx-auto px-4 py-6 pb-24">
         {safeView === 'groups'   && <GroupsView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} openTeam={openTeam} />}
         {safeView === 'matches'  && <MatchesView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
@@ -551,7 +310,6 @@ export default function App() {
         )}
         {safeView === 'knockout' && <KnockoutView state={state} update={update} updateMatches={updateMatches} allTeams={allTeams} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
         {safeView === 'stats'    && <StatsView state={state} allTeams={allTeams} openTeam={openTeam} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />}
-        {safeView === 'advanced-stats' && <AdvancedStatsView state={state} openTeam={openTeam} />}
         {safeView === 'team' && activeTeamId && (
           <TeamDetailView state={state} teamId={activeTeamId} onBack={() => setView('groups')} openMatch={(id) => { setActiveMatchId(id); setView('match'); }} />
         )}
@@ -865,9 +623,8 @@ function Header({ state, view, setView, code, onLeave }) {
   const tabs = [
     { id: 'groups',   label: 'Grupos',       icon: Users    },
     { id: 'matches',  label: 'Jogos',        icon: Calendar },
-    { id: 'knockout',      label: 'Mata-Mata',    icon: Trophy   },
-    { id: 'stats',         label: 'Estatísticas', icon: BarChart3 },
-    { id: 'advanced-stats', label: 'Avançadas',   icon: Target    },
+    { id: 'knockout', label: 'Mata-Mata',    icon: Trophy   },
+    { id: 'stats',    label: 'Estatísticas', icon: BarChart3 },
   ];
   const format = getFormat(state.formatId);
   if (!format.hasGroups) {
@@ -1091,7 +848,7 @@ function RulesSetupView({ state, update, code, onLeave }) {
   return (
     <WizardShell step={2} totalSteps={3} code={code} onLeave={onLeave}
       title="Defina as regras"
-      subtitle={`Formato: ${format.name}. As regras ficam trancadas depois que o torneio começar.`}
+      subtitle={`Formato: ${format.name}. As regras ficam trancadas depois que o torneio começar, exceto ida/volta a partir das oitavas, que pode mudar até as oitavas começarem.`}
     >
       <div className="space-y-4">
         {format.hasGroups && (
@@ -1100,7 +857,7 @@ function RulesSetupView({ state, update, code, onLeave }) {
           </RuleCard>
         )}
         <RuleCard icon={<Trophy className="w-4 h-4" />} title="Mata-mata">
-          <ToggleRow label="Ida e volta no mata-mata" desc="Decidido por placar agregado." checked={!!rules.knockoutReturn} onChange={(v) => setRule('knockoutReturn', v)} />
+          <ToggleRow label="Ida e volta a partir das oitavas" desc="Rodadas anteriores às oitavas continuam em jogo único. Nas oitavas em diante, o confronto é decidido pelo placar agregado." checked={!!rules.knockoutReturn} onChange={(v) => setRule('knockoutReturn', v)} />
           {format.hasGroups && (
             <RadioRow label="Sorteio do mata-mata" value={rules.drawMode || 'fifa'} onChange={(v) => setRule('drawMode', v)} options={[
               { v: 'fifa',   label: 'Chave fixa (padrão FIFA)', desc: 'Como na Copa: 1º de cada grupo enfrenta um 3º colocado / 2º cruzado, conforme padrão oficial.' },
@@ -1147,10 +904,15 @@ function RuleCard({ icon, title, children }) {
   );
 }
 
-function ToggleRow({ label, desc, checked, onChange }) {
+function ToggleRow({ label, desc, checked, onChange, disabled = false }) {
   return (
-    <label className="flex items-start gap-3 cursor-pointer">
-      <button type="button" onClick={() => onChange(!checked)} className={cls('mt-0.5 relative w-10 h-6 rounded-full transition-colors flex-shrink-0', checked ? 'bg-lime-400' : 'bg-slate-700')}>
+    <label className={cls('flex items-start gap-3', disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => !disabled && onChange(!checked)}
+        className={cls('mt-0.5 relative w-10 h-6 rounded-full transition-colors flex-shrink-0 disabled:cursor-not-allowed', checked ? 'bg-lime-400' : 'bg-slate-700')}
+      >
         <span className={cls('absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform', checked ? 'translate-x-[1.125rem]' : 'translate-x-0.5')} />
       </button>
       <div className="text-sm">
@@ -2552,7 +2314,6 @@ function KnockoutMatchExtras({ state, match, home, away, update, updateMatches }
       played: false,
       events: [],
       ratings: {},
-      teamStats: {},
       penaltyWinner: null,
     };
     updateMatches([...state.matches, newET]);
@@ -3014,6 +2775,15 @@ function fileToBase64(file) {
 function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
   const format = getFormat(state.formatId);
   const koMatches = state.matches.filter((m) => m.stage !== 'group');
+  const hasR16 = format.knockoutStages?.includes('r16');
+  const returnToggleUnlocked = hasR16 && canChangeKnockoutReturn(state);
+
+  const handleKnockoutReturnToggle = useCallback((enabled) => {
+    const result = reconfigureKnockoutReturn(state, enabled);
+    if (result.locked || !result.changed) return;
+    update({ rules: result.rules });
+    updateMatches(result.matches);
+  }, [state, update, updateMatches]);
 
   /* Se de algum jeito não tem KO gerado, gera agora */
   if (koMatches.length === 0) {
@@ -3043,6 +2813,29 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
 
   return (
     <div className="space-y-4">
+      {hasR16 && (
+        <Card className="p-4">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-bold uppercase tracking-wider text-lime-400 mb-2 flex items-center gap-2">
+                <Settings2 className="w-4 h-4" /> Formato a partir das oitavas
+              </div>
+              <ToggleRow
+                label="Ida e volta a partir das oitavas"
+                desc={returnToggleUnlocked
+                  ? 'Pode ser alterado até a primeira partida das oitavas ser registrada. Rodadas anteriores continuam em jogo único.'
+                  : 'Bloqueado porque as oitavas já começaram.'}
+                checked={!!state.rules?.knockoutReturn}
+                onChange={handleKnockoutReturnToggle}
+                disabled={!returnToggleUnlocked}
+              />
+            </div>
+            {!returnToggleUnlocked && (
+              <Pill color="slate"><Clock className="w-3 h-3" /> Bloqueado</Pill>
+            )}
+          </div>
+        </Card>
+      )}
       {groupsInProgress && (
         <div className="bg-amber-900/20 border border-amber-800/50 text-amber-200 text-xs rounded-lg p-3 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -3060,145 +2853,95 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
 
 function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
   const [swapTeam, setSwapTeam] = useState(null);
-  const [draftKoMatches, setDraftKoMatches] = useState(null);
-  const [swapError, setSwapError] = useState('');
+  // swapTeam: { teamId, stage, koIndex } | null
 
-  const displayKoMatches = draftKoMatches || koMatches;
-  const hasPendingBracketEdits = !!draftKoMatches;
-  const groupMatches = state.matches.filter((m) => m.stage === 'group');
-  const effectiveState = useMemo(
-    () => ({ ...state, matches: [...groupMatches, ...displayKoMatches] }),
-    [state, groupMatches, displayKoMatches],
-  );
-
-  const allStages = [...new Set(displayKoMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
-  const stageOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
-  const mainStages = allStages
-    .filter((stage) => stage !== 'third')
-    .sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
-  const hasThird = allStages.includes('third');
-
-  const groupByConfront = useCallback((stage) => {
-    const arr = displayKoMatches.filter((m) => m.stage === stage && !m.isExtra);
-    const grouped = {};
-    for (const match of arr) {
-      const key = match.koIndex;
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(match);
-    }
-    return Object.entries(grouped)
-      .sort(([a], [b]) => Number(a) - Number(b))
-      .map(([, legs]) => legs);
-  }, [displayKoMatches]);
-
-  const stageSwapOptions = useMemo(() => (
-    mainStages.map((stage) => getSameOwnerKnockoutSwapOptions(effectiveState, stage))
-  ), [effectiveState, mainStages]);
-  const stageOptionsById = useMemo(
-    () => Object.fromEntries(stageSwapOptions.map((option) => [option.stage, option])),
-    [stageSwapOptions],
-  );
-
-  /* Lida com clique num time: seleciona ou prepara uma troca no rascunho.
-     Nada é salvo no campeonato antes do botão de confirmação. */
+  /* Lida com clique num time: seleciona ou executa o swap */
   const handleTeamClick = useCallback((teamId, stage, koIndex) => {
     if (!teamId) return;
-    const stageOptions = getSameOwnerKnockoutSwapOptions(effectiveState, stage);
-    if (stageOptions.blockedByLaterResults) {
-      setSwapError('Esta fase não pode mais ser editada porque já existem resultados em uma fase posterior.');
-      return;
-    }
-
-    const clickedLegs = displayKoMatches.filter(
-      (m) => m.stage === stage && m.koIndex === koIndex && !m.isExtra,
-    );
-    if (clickedLegs.some((m) => m.played)) return;
-
     if (!swapTeam) {
-      setSwapError('');
       setSwapTeam({ teamId, stage, koIndex });
       return;
     }
     if (swapTeam.teamId === teamId) {
-      setSwapTeam(null);
-      setSwapError('');
+      setSwapTeam(null); // clicou no mesmo → cancela
       return;
     }
-    if (swapTeam.stage !== stage) {
-      setSwapError('A troca deve ser feita entre dois times da mesma fase.');
-      return;
-    }
-
-    const selectedLegs = displayKoMatches.filter(
-      (m) => m.stage === swapTeam.stage && m.koIndex === swapTeam.koIndex && !m.isExtra,
-    );
-    if (selectedLegs.some((m) => m.played)) {
-      setSwapTeam(null);
-      return;
-    }
-
+    /* Executa o swap entre os dois times.
+       Marca os matches afetados como manuallyOverridden pra o propagate respeitar. */
     const A = swapTeam;
     const B = { teamId, stage, koIndex };
-    const newMatches = displayKoMatches.map((match) => {
-      if (match.played || match.isExtra) return match;
-      const inA = match.stage === A.stage && match.koIndex === A.koIndex;
-      const inB = match.stage === B.stage && match.koIndex === B.koIndex;
-      if (!inA && !inB) return match;
-      const swapId = (id) => (
-        id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id
-      );
+    const newMatches = koMatches.map((m) => {
+      if (m.played) return m; // nunca mexe em jogos já jogados
+      const inA = m.stage === A.stage && m.koIndex === A.koIndex;
+      const inB = m.stage === B.stage && m.koIndex === B.koIndex;
+      if (!inA && !inB) return m;
+      const swap = (id) => id === A.teamId ? B.teamId : id === B.teamId ? A.teamId : id;
       return {
-        ...match,
-        homeTeamId: swapId(match.homeTeamId),
-        awayTeamId: swapId(match.awayTeamId),
+        ...m,
+        homeTeamId: swap(m.homeTeamId),
+        awayTeamId: swap(m.awayTeamId),
         manuallyOverridden: true,
       };
     });
-
-    const propagated = propagateKnockoutWinners(newMatches);
-    setDraftKoMatches(propagated.matches);
+    /* Junta com matches de outros stages que não foram tocados */
+    const groupMatches = state.matches.filter((m) => m.stage === 'group');
+    updateMatches([...groupMatches, ...newMatches]);
     setSwapTeam(null);
-    setSwapError('');
-  }, [swapTeam, displayKoMatches, effectiveState]);
+  }, [swapTeam, koMatches, state.matches, updateMatches]);
 
-  const handleReshuffleSameOwner = useCallback((stage) => {
-    const result = reshuffleSameOwnerKnockout(effectiveState, stage);
-    if (result.swappedPairs > 0) {
-      setDraftKoMatches(result.matches.filter((m) => m.stage !== 'group'));
-      setSwapTeam(null);
-      setSwapError('');
-    }
-  }, [effectiveState]);
-
-  const confirmBracketEdits = useCallback(() => {
-    if (!draftKoMatches) return;
-    updateMatches([...groupMatches, ...draftKoMatches]);
-    setDraftKoMatches(null);
-    setSwapTeam(null);
-    setSwapError('');
-  }, [draftKoMatches, groupMatches, updateMatches]);
-
-  const cancelBracketEdits = useCallback(() => {
-    setDraftKoMatches(null);
-    setSwapTeam(null);
-    setSwapError('');
-  }, []);
-
-  /* Cancela a seleção com ESC. O rascunho permanece até confirmar ou cancelar. */
+  /* Cancela swap com ESC */
   useEffect(() => {
     if (!swapTeam) return;
-    const handler = (event) => {
-      if (event.key === 'Escape') {
-        setSwapTeam(null);
-        setSwapError('');
-      }
-    };
+    const handler = (e) => { if (e.key === 'Escape') setSwapTeam(null); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [swapTeam]);
 
+  /* Stages do bracket principal (exclui third lugar, mostra separado) */
+  const allStages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
+  const stageOrder = ['r64', 'r32', 'r16', 'qf', 'sf', 'final'];
+  const mainStages = allStages.filter((s) => s !== 'third').sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
+  const hasThird = allStages.includes('third');
+
+  const groupByConfront = (stage) => {
+    const arr = koMatches.filter((m) => m.stage === stage && !m.isExtra);
+    const grouped = {};
+    for (const m of arr) {
+      const key = m.koIndex;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(m);
+    }
+    return Object.entries(grouped).sort(([a], [b]) => Number(a) - Number(b)).map(([, legs]) => legs);
+  };
+
   const firstStageCount = groupByConfront(mainStages[0])?.length || 0;
   const minHeight = Math.max(420, firstStageCount * 86);
+
+  /* Calcula quantos confrontos têm mesmo dono (e que ainda podem ser sorteados) */
+  const sameOwnerConfronts = useMemo(() => {
+    const firstStage = mainStages[0];
+    if (!firstStage) return { total: 0, p1: 0, p2: 0, swappable: 0 };
+    let total = 0, p1 = 0, p2 = 0;
+    const confronts = groupByConfront(firstStage);
+    for (const legs of confronts) {
+      const sample = legs[0];
+      const home = getTeamById(state, sample.homeTeamId);
+      const away = getTeamById(state, sample.awayTeamId);
+      if (!home?.owner || !away?.owner) continue;
+      if (home.owner === away.owner && legs.every((l) => !l.played)) {
+        total++;
+        if (home.owner === 'p1') p1++; else if (home.owner === 'p2') p2++;
+      }
+    }
+    return { total, p1, p2, swappable: Math.min(p1, p2) };
+  }, [state.matches, mainStages, koMatches]);
+
+  const handleReshuffleSameOwner = useCallback(() => {
+    const result = reshuffleSameOwnerKnockout(state);
+    if (result.swappedPairs > 0) {
+      updateMatches(result.matches);
+    }
+  }, [state, updateMatches]);
 
   const handleRegenerateBracket = useCallback(() => {
     const anyKoPlayed = state.matches.some((m) => m.stage !== 'group' && m.played);
@@ -3208,116 +2951,106 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     if (!window.confirm(msg)) return;
     const newMatches = regenerateKnockoutBracket(state);
     updateMatches(newMatches);
-    cancelBracketEdits();
-  }, [state, updateMatches, cancelBracketEdits]);
+  }, [state, updateMatches]);
 
+  /* Conta swaps manuais ativos (matches com manuallyOverridden) */
+  const manualSwapCount = useMemo(() =>
+    koMatches.filter((m) => m.manuallyOverridden && !m.played && !m.isExtra).length
+  , [koMatches]);
+
+  const handleRestorePropagate = useCallback(() => {
+    if (!window.confirm(`Restaurar a propagação automática vai zerar os ${manualSwapCount} slot(s) customizado(s) manualmente e deixar o algoritmo recolocar os vencedores. Confirmar?`)) return;
+    const newMatches = state.matches.map((m) => {
+      if (m.stage === 'group' || m.isExtra || m.played) return m;
+      if (!m.manuallyOverridden) return m;
+      return { ...m, manuallyOverridden: false, homeTeamId: null, awayTeamId: null };
+    });
+    updateMatches(newMatches);
+  }, [state, updateMatches, manualSwapCount]);
+
+  /* Detecta buracos no bracket (slot vazio quando deveria ter time) */
   const bracketHasHoles = useMemo(() => {
     const firstStage = mainStages[0];
     if (!firstStage) return false;
-    return displayKoMatches.some((m) => (
+    return koMatches.some((m) =>
       m.stage === firstStage && !m.isExtra && !m.played &&
-      (!m.homeTeamId || !m.awayTeamId)
-    ));
-  }, [displayKoMatches, mainStages]);
+      (!m.homeTeamId || !m.awayTeamId));
+  }, [koMatches, mainStages]);
 
   return (
     <div className="space-y-4">
-      {/* Cada fase recebe seu próprio botão quando existem dois confrontos
-          de mesmo dono que realmente podem virar dois confrontos mistos. */}
-      {stageSwapOptions.filter((option) => option.swappable > 0).map((option) => (
-        <div key={option.stage} className="flex items-center justify-between gap-3 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg text-sm">
+      {/* Botão de sortear same-owner — só aparece quando há pares pra trocar */}
+      {sameOwnerConfronts.swappable > 0 && !swapTeam && (
+        <div className="flex items-center justify-between gap-3 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg text-sm">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-400" />
             <span className="text-amber-200">
-              {STAGE_LABELS[option.stage]}: {option.total} confronto{option.total > 1 ? 's' : ''} com o mesmo dono.
-              É possível corrigir {option.swappable * 2} confronto{option.swappable * 2 > 1 ? 's' : ''} sem alterar os demais.
+              {sameOwnerConfronts.total} confronto{sameOwnerConfronts.total > 1 ? 's' : ''} com mesmo dono.
+              Posso sortear {sameOwnerConfronts.swappable} {sameOwnerConfronts.swappable > 1 ? 'pares' : 'par'} pra evitar.
             </span>
           </div>
-          <button
-            onClick={() => handleReshuffleSameOwner(option.stage)}
-            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-500 text-amber-950 hover:bg-amber-400 transition flex items-center gap-1"
-          >
+          <button onClick={handleReshuffleSameOwner}
+            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-500 text-amber-950 hover:bg-amber-400 transition flex items-center gap-1">
             <Shuffle className="w-3.5 h-3.5" /> Sortear adversários
           </button>
         </div>
-      ))}
-
-      {/* Alterações de chaveamento são locais até a confirmação explícita. */}
-      {hasPendingBracketEdits && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-lime-950/30 border border-lime-600/50 rounded-lg text-sm">
-          <div className="flex items-center gap-2 text-lime-100">
-            <Check className="w-4 h-4 text-lime-400" />
-            Revise o novo chaveamento. Ele só será salvo e usado para a propagação dos vencedores após a confirmação.
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={cancelBracketEdits}
-              className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-xs font-bold uppercase tracking-wider"
-            >
-              Cancelar alterações
-            </button>
-            <button
-              onClick={confirmBracketEdits}
-              className="px-3 py-1.5 rounded bg-lime-500 hover:bg-lime-400 text-slate-950 text-xs font-black uppercase tracking-wider"
-            >
-              Confirmar novo caminho
-            </button>
-          </div>
-        </div>
       )}
 
-      {swapError && (
-        <div className="p-2.5 bg-red-950/30 border border-red-700/40 rounded-lg text-xs text-red-200 flex items-center gap-2">
-          <AlertTriangle className="w-3.5 h-3.5" /> {swapError}
-        </div>
-      )}
-
+      {/* Banner de emergência: bracket com buracos */}
       {bracketHasHoles && (
         <div className="flex items-center justify-between gap-3 p-3 bg-red-900/20 border border-red-700/40 rounded-lg text-sm">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-red-400" />
             <span className="text-red-200">
-              Chaveamento com slots vazios. Use a troca manual para completar, ou regenere tudo.
+              Chaveamento com slots vazios. Use o swap manual pra completar, ou regenere tudo.
             </span>
           </div>
-          <button
-            onClick={handleRegenerateBracket}
-            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-red-500 text-red-950 hover:bg-red-400 transition flex items-center gap-1"
-          >
+          <button onClick={handleRegenerateBracket}
+            className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-red-500 text-red-950 hover:bg-red-400 transition flex items-center gap-1">
             <Shuffle className="w-3.5 h-3.5" /> Regenerar mata-mata
           </button>
         </div>
       )}
 
+      {/* Banner de swaps manuais ativos */}
+      {manualSwapCount > 0 && !swapTeam && (
+        <div className="flex items-center justify-between gap-3 p-2.5 bg-blue-950/20 border border-blue-700/30 rounded-lg text-xs">
+          <div className="flex items-center gap-2 text-blue-200">
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+            {manualSwapCount} slot{manualSwapCount > 1 ? 's' : ''} customizado{manualSwapCount > 1 ? 's' : ''} manualmente. A propagação automática está desativada neles.
+          </div>
+          <button onClick={handleRestorePropagate}
+            className="font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-blue-700 text-blue-50 hover:bg-blue-600 transition flex items-center gap-1">
+            Restaurar propagação
+          </button>
+        </div>
+      )}
 
-
+      {/* Banner modo swap */}
       {swapTeam ? (
         <div className="flex items-center justify-between gap-3 p-3 bg-blue-900/30 border border-blue-700/60 rounded-lg text-sm">
           <div className="flex items-center gap-2">
             <ArrowLeftRight className="w-4 h-4 text-blue-300" />
             <span className="text-blue-200">
-              <strong>{getTeamById(state, swapTeam.teamId)?.name}</strong> selecionado em {STAGE_LABELS[swapTeam.stage]}.
-              Clique em outro time da mesma fase para trocar.
+              <strong>{getTeamById(state, swapTeam.teamId)?.name}</strong> selecionado. Clique em outro time para trocar.
             </span>
           </div>
-          <button
-            onClick={() => { setSwapTeam(null); setSwapError(''); }}
-            className="text-blue-400 hover:text-blue-200 text-xs flex items-center gap-1"
-          >
+          <button onClick={() => setSwapTeam(null)} className="text-blue-400 hover:text-blue-200 text-xs flex items-center gap-1">
             <X className="w-3.5 h-3.5" /> Cancelar (ESC)
           </button>
         </div>
       ) : (
         <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
           <ArrowLeftRight className="w-3.5 h-3.5" />
-          Use o ícone ao lado de um time para trocar posições dentro da mesma fase. Depois, confirme o novo caminho.
+          Clique no ícone <ArrowLeftRight className="w-3 h-3 inline" /> ao lado de um time para trocar de posição (só funciona em jogos sem resultado).
         </div>
       )}
 
+      {/* Header com nomes das fases */}
       <div className="overflow-x-auto pb-2">
         <div className="inline-flex gap-3 min-w-full">
           {mainStages.map((stage) => (
-            <div key={`${stage}-h`} className="flex-shrink-0 w-[210px] text-center">
+            <div key={stage + '-h'} className="flex-shrink-0 w-[210px] text-center">
               <div className="text-xs font-bold uppercase tracking-wider text-lime-400 pb-2 border-b border-slate-800">
                 {STAGE_LABELS[stage] || stage}
               </div>
@@ -3327,20 +3060,16 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
         <div className="inline-flex gap-3 mt-2 min-w-full" style={{ minHeight: `${minHeight}px` }}>
           {mainStages.map((stage) => {
             const confronts = groupByConfront(stage);
-            const canEditStage = !stageOptionsById[stage]?.blockedByLaterResults;
             return (
               <div key={stage} className="flex-shrink-0 w-[210px] flex flex-col justify-around gap-2">
-                {confronts.map((legs, confrontIndex) => (
+                {confronts.map((legs, cIdx) => (
                   <KnockoutConfrontCard
-                    key={`${stage}-${confrontIndex}`}
+                    key={`${stage}-${cIdx}`}
                     state={state}
-                    matchesForDisplay={displayKoMatches}
                     legs={legs}
                     openMatch={openMatch}
                     swapTeam={swapTeam}
                     onTeamClick={handleTeamClick}
-                    canEdit={canEditStage}
-                    bracketDraftActive={hasPendingBracketEdits}
                   />
                 ))}
               </div>
@@ -3349,23 +3078,21 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
         </div>
       </div>
 
+      {/* 3º Lugar separado */}
       {hasThird && (
         <div>
           <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2 flex items-center gap-2">
             <Award className="w-4 h-4" /> Disputa de 3º lugar
           </h3>
           <div className="max-w-xs">
-            {groupByConfront('third').map((legs, confrontIndex) => (
+            {groupByConfront('third').map((legs, cIdx) => (
               <KnockoutConfrontCard
-                key={`third-${confrontIndex}`}
+                key={`third-${cIdx}`}
                 state={state}
-                matchesForDisplay={displayKoMatches}
                 legs={legs}
                 openMatch={openMatch}
                 swapTeam={swapTeam}
                 onTeamClick={handleTeamClick}
-                canEdit={!getSameOwnerKnockoutSwapOptions(effectiveState, 'third').blockedByLaterResults}
-                bracketDraftActive={hasPendingBracketEdits}
               />
             ))}
           </div>
@@ -3375,27 +3102,17 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
   );
 }
 
-function KnockoutConfrontCard({
-  state,
-  matchesForDisplay,
-  legs,
-  openMatch,
-  swapTeam,
-  onTeamClick,
-  canEdit,
-  bracketDraftActive,
-}) {
+function KnockoutConfrontCard({ state, legs, openMatch, swapTeam, onTeamClick }) {
   legs = [...legs].sort((a, b) => a.leg - b.leg);
   const sample = legs[0];
   const home = getTeamById(state, sample.homeTeamId);
   const away = getTeamById(state, sample.awayTeamId);
   const sameOwner = home?.owner && away?.owner && home.owner === away.owner;
-  const outcome = getMatchOutcome(matchesForDisplay, sample.stage, sample.koIndex);
+  const outcome = getMatchOutcome(state.matches, sample.stage, sample.koIndex);
   const isMultiLeg = sample.totalLegs > 1;
-  const etMatch = matchesForDisplay.find(
-    (m) => m.stage === sample.stage && m.koIndex === sample.koIndex && m.isExtra,
-  );
+  const etMatch = state.matches.find((m) => m.stage === sample.stage && m.koIndex === sample.koIndex && m.isExtra);
 
+  /* Placar exibido (agregado ou simples) */
   let homeDisplay = '—';
   let awayDisplay = '—';
   if (legs.every((m) => m.played)) {
@@ -3410,17 +3127,21 @@ function KnockoutConfrontCard({
 
   const homeWon = outcome.decided && outcome.winner === sample.homeTeamId;
   const awayWon = outcome.decided && outcome.winner === sample.awayTeamId;
+
+  /* Um confronto pode ser trocado enquanto nenhum leg foi jogado */
   const confrontPlayed = legs.some((m) => m.played);
 
   const TeamRow = ({ team, teamId, score, won, isSecond }) => {
     const isSelected = swapTeam?.teamId === teamId;
-    const sameSwapStage = !swapTeam || swapTeam.stage === sample.stage;
-    const isSwapTarget = !!(
-      swapTeam && sameSwapStage && !isSelected && !confrontPlayed && teamId && canEdit
-    );
+    const isSwapTarget = swapTeam && !isSelected && !confrontPlayed && teamId;
     const ownerColor = getOwnerColor(state, team?.owner);
     const decidedAndLost = outcome.decided && !won && team;
 
+    /* Estilo de fundo da linha:
+       - Selecionado para swap → azul forte
+       - Vencedor → fundo emerald saturado
+       - Perdedor (decidido) → opaco
+       - Padrão com time definido → tinta sutil da cor do dono */
     let bgStyle = {};
     if (isSelected) {
       bgStyle = { background: 'rgb(30 58 138 / 0.5)' };
@@ -3432,8 +3153,6 @@ function KnockoutConfrontCard({
       bgStyle = { background: `linear-gradient(90deg, ${ownerColor}28 0%, ${ownerColor}10 100%)` };
     }
 
-    const canSwapThisTeam = !confrontPlayed && !!teamId && canEdit && sameSwapStage;
-
     return (
       <div
         className={cls(
@@ -3443,18 +3162,15 @@ function KnockoutConfrontCard({
         )}
         style={bgStyle}
       >
-        {canSwapThisTeam ? (
+        {/* Botão de swap — só aparece quando jogo não jogado */}
+        {!confrontPlayed && teamId ? (
           <button
             onClick={() => onTeamClick(teamId, sample.stage, sample.koIndex)}
             className={cls(
               'flex-shrink-0 px-1.5 py-2 transition',
-              isSelected
-                ? 'text-blue-300'
-                : isSwapTarget
-                  ? 'text-blue-400 hover:text-blue-200'
-                  : 'text-slate-600 hover:text-blue-400',
+              isSelected ? 'text-blue-300' : isSwapTarget ? 'text-blue-400 hover:text-blue-200' : 'text-slate-600 hover:text-blue-400',
             )}
-            title={isSelected ? 'Selecionado — clique em outro time da fase' : 'Trocar este time de posição'}
+            title={isSelected ? 'Selecionado — clique em outro time para trocar' : 'Clique para trocar este time de posição'}
           >
             <ArrowLeftRight className="w-3 h-3" />
           </button>
@@ -3462,15 +3178,11 @@ function KnockoutConfrontCard({
           <div className="w-6 flex-shrink-0" />
         )}
 
+        {/* Conteúdo clicável que abre o jogo */}
         <button
-          onClick={() => {
-            if (!bracketDraftActive) openMatch(legs[isMultiLeg && isSecond ? 1 : 0].id);
-          }}
-          disabled={bracketDraftActive}
-          title={bracketDraftActive ? 'Confirme ou cancele o novo chaveamento antes de abrir jogos' : 'Abrir jogo'}
+          onClick={() => openMatch(legs[isMultiLeg && isSecond ? 1 : 0].id)}
           className={cls(
-            'flex-1 grid grid-cols-[1fr_auto] items-center gap-1 pr-2 py-1.5 transition min-w-0',
-            bracketDraftActive ? 'cursor-not-allowed' : 'hover:bg-slate-800/40',
+            'flex-1 grid grid-cols-[1fr_auto] items-center gap-1 pr-2 py-1.5 hover:bg-slate-800/40 transition min-w-0',
           )}
         >
           <div className="flex items-center gap-1.5 truncate min-w-0">
@@ -3484,14 +3196,8 @@ function KnockoutConfrontCard({
               {team?.name || 'A definir'}
             </span>
             {team?.owner && (
-              <OwnerTag
-                owner={team.owner}
-                p1Name={state.player1Name}
-                p2Name={state.player2Name}
-                p1Color={state.player1Color}
-                p2Color={state.player2Color}
-                size="xs"
-              />
+              <OwnerTag owner={team.owner} p1Name={state.player1Name} p2Name={state.player2Name}
+                p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
             )}
           </div>
           <span className={cls(
@@ -3509,24 +3215,21 @@ function KnockoutConfrontCard({
     <Card className={cls('overflow-hidden', sameOwner && 'border-amber-700/60')}>
       {sameOwner && (
         <div className="px-2 py-0.5 bg-amber-900/30 text-[9px] text-amber-300 font-bold flex items-center gap-1">
-          <AlertTriangle className="w-2.5 h-2.5" /> Mesmo dono
+          <AlertTriangle className="w-2.5 h-2.5" />Mesmo dono
         </div>
       )}
 
       <TeamRow team={home} teamId={sample.homeTeamId} score={homeDisplay} won={homeWon} isSecond={false} />
-      <TeamRow team={away} teamId={sample.awayTeamId} score={awayDisplay} won={awayWon} isSecond />
+      <TeamRow team={away} teamId={sample.awayTeamId} score={awayDisplay} won={awayWon} isSecond={true} />
 
+      {/* Meta-info: prorrogação, ida/volta, pênaltis */}
       {(isMultiLeg || etMatch || outcome.viaPenalties) && (
         <div className="px-2 py-1 bg-slate-950/60 border-t border-slate-800 text-[10px] text-slate-500 text-center space-y-0.5">
           {isMultiLeg && legs.every((m) => m.played) && (
             <div>Ida: {legs[0].homeScore}-{legs[0].awayScore} · Volta: {legs[1].homeScore}-{legs[1].awayScore}</div>
           )}
           {etMatch && (
-            <button
-              onClick={() => { if (!bracketDraftActive) openMatch(etMatch.id); }}
-              disabled={bracketDraftActive}
-              className="text-amber-400 hover:text-amber-300 flex items-center gap-1 justify-center w-full disabled:cursor-not-allowed"
-            >
+            <button onClick={() => openMatch(etMatch.id)} className="text-amber-400 hover:text-amber-300 flex items-center gap-1 justify-center w-full">
               <Zap className="w-2.5 h-2.5" />
               Prorrogação {etMatch.played ? `${etMatch.homeScore}-${etMatch.awayScore}` : '(jogar)'}
               {outcome.viaPenalties && ' + pênaltis'}
@@ -3563,17 +3266,12 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
   const offensiveDep  = useMemo(() => computeOffensiveDependency(state), [state.matches]);
   const surprises     = useMemo(() => computeTournamentSurprises(state), [state.matches]);
   const suspended     = useMemo(() => computeAllSuspended(state),        [state.matches, state.teamRosters, state.rules]);
+  const teamMetrics   = useMemo(() => computeTeamMetrics(state),         [state.matches]);
+  const goalkeepers   = useMemo(() => computeGoalkeeperRankings(state),  [state.matches, state.playerPositions]);
 
   const topScorers = [...playerStats].filter((s) => s.goals > 0).sort((a, b) => b.goals - a.goals || b.assists - a.assists);
   const topAssists = [...playerStats].filter((s) => s.assists > 0).sort((a, b) => b.assists - a.assists);
-  const topRated   = [...playerStats]
-    .filter((s) => s.ratingCount >= 2)
-    .map((s) => ({
-      ...s,
-      simpleAvg: s.ratingSum / s.ratingCount,
-      avg: s.weightedAvg ?? (s.ratingSum / s.ratingCount),
-    }))
-    .sort((a, b) => b.avg - a.avg);
+  const topRated   = [...playerStats].filter((s) => s.ratingCount >= 2).map((s) => ({ ...s, avg: s.ratingSum / s.ratingCount })).sort((a, b) => b.avg - a.avg);
   const mostCards  = [...playerStats].filter((s) => s.yellows + s.reds > 0).sort((a, b) => (b.reds * 10 + b.yellows) - (a.reds * 10 + a.yellows));
 
   const champion = getChampion(state);
@@ -3680,6 +3378,16 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
       {/* Estatísticas de equipes */}
       <TeamRankingsSection state={state} openTeam={openTeam} />
 
+      {/* Métricas avançadas de times */}
+      {teamMetrics.some((t) => t.possessionCount > 0 || t.shotsCount > 0 || t.xGCount > 0) && (
+        <AdvancedTeamMetricsSection state={state} rows={teamMetrics} openTeam={openTeam} />
+      )}
+
+      {/* Ranking de goleiros */}
+      {goalkeepers.length > 0 && (
+        <GoalkeeperRankingSection state={state} rows={goalkeepers} openTeam={openTeam} />
+      )}
+
       {/* Recordes */}
       {records && <RecordsCard state={state} records={records} />}
 
@@ -3691,7 +3399,7 @@ function StatsView({ state, allTeams, openTeam, openMatch }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <StatsList title="Artilharia" icon={<Goal className="w-4 h-4 text-emerald-400" />} list={topScorers} render={(s) => <span className="tabular-nums font-bold">{s.goals}</span>} state={state} />
           <StatsList title="Assistências" icon={<Hand className="w-4 h-4 text-sky-400" />} list={topAssists} render={(s) => <span className="tabular-nums font-bold">{s.assists}</span>} state={state} />
-          <StatsList title="Melhores médias ponderadas" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold" title={`Média ponderada pela fase da partida. Média simples: ${s.simpleAvg.toFixed(2)}`}>{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} state={state} />
+          <StatsList title="Melhores médias" icon={<Star className="w-4 h-4 text-yellow-400" />} list={topRated} render={(s) => <span className="tabular-nums font-bold">{s.avg.toFixed(2)} <span className="text-slate-500 text-xs">({s.ratingCount}j)</span></span>} state={state} />
           <StatsList title="Mais cartões" icon={<span className="inline-block w-2.5 h-3.5 bg-yellow-400 rounded-sm" />} list={mostCards} render={(s) => <span className="tabular-nums text-xs"><span className="text-yellow-400 font-bold">{s.yellows}</span>{s.reds > 0 && <> <span className="text-red-400 font-bold ml-1">{s.reds}</span></>}</span>} state={state} />
         </div>
       </section>
@@ -3761,7 +3469,7 @@ function ChampionPathCard({ state, championPath }) {
 
 /* ========== Power Ranking — Times ========== */
 function PowerRankingTeamsList({ rows, state, openTeam, maxHeight = '440px' }) {
-  const stageName = { 0: '—', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
+  const stageName = { 0: '—', 0.5: 'R64', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
   return (
     <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
       <div className="space-y-1">
@@ -3841,17 +3549,13 @@ function PowerRankingPlayersList({ rows, state, openTeam, maxHeight = '440px' })
                 >{p.teamName}</button>
               </div>
               <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-2">
-                {p.matchesPlayed > 0 && <span className="tabular-nums" title="Partidas avaliadas">{p.matchesPlayed}j</span>}
                 {p.goals > 0 && <span className="tabular-nums text-emerald-400">⚽{p.goals}</span>}
                 {p.assists > 0 && <span className="tabular-nums text-sky-400">🤝{p.assists}</span>}
                 {p.avg > 0 && <span className="tabular-nums text-yellow-300">⭐{p.avg.toFixed(2)}</span>}
                 {p.yellows > 0 && <span className="tabular-nums text-yellow-500">🟨{p.yellows}</span>}
                 {p.reds > 0 && <span className="tabular-nums text-red-400">🟥{p.reds}</span>}
               </div>
-              <div
-                className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right"
-                title={`Média ponderada: ${p.avg.toFixed(2)} · multiplicador da campanha: ${(p.campaignMultiplier || 1).toFixed(3)} · bônus de contexto: +${(p.contextBonus || 0).toFixed(1)}`}
-              >
+              <div className="font-mono font-black tabular-nums text-sm text-lime-300 min-w-[50px] text-right">
                 {p.powerScore.toFixed(1)}
               </div>
             </div>
@@ -4169,24 +3873,11 @@ function PositionRanking({ posDef, list, state }) {
                 </div>
                 <OwnerTag owner={p.owner} p1Name={state.player1Name} p2Name={state.player2Name}
                   p1Color={state.player1Color} p2Color={state.player2Color} size="xs" />
-                <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[110px] justify-end">
-                  {posDef.id === 'GOL' ? (
-                    <>
-                      <span className="tabular-nums text-yellow-300" title="Defesas">🧤 {p.saves || 0}</span>
-                      <span className="tabular-nums" title="Gols sofridos pelo time">GC {p.goalsAgainst || 0}</span>
-                      {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
-                    </>
-                  ) : (
-                    <>
-                      {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
-                      {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
-                    </>
-                  )}
+                <div className="text-[10px] text-slate-400 hidden sm:flex items-center gap-1.5 min-w-[80px] justify-end">
+                  {p.avg > 0 && <span className="tabular-nums">⭐{p.avg.toFixed(2)}</span>}
+                  {p.goals > 0 && <span className="tabular-nums text-emerald-400">{p.goals}G</span>}
                 </div>
-                <div
-                  className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right"
-                  title={`${posDef.id === 'GOL' ? 'Score: defesas, média ponderada e gols sofridos' : 'Score por posição com média ponderada'} · multiplicador da campanha ${(p.campaignMultiplier || 1).toFixed(3)} · bônus de contexto +${(p.contextBonus || 0).toFixed(1)}`}
-                >
+                <div className="font-mono font-black tabular-nums text-xs text-lime-300 min-w-[40px] text-right">
                   {p.posScore.toFixed(1)}
                 </div>
               </div>
@@ -4529,7 +4220,7 @@ function TeamDetailView({ state, teamId, onBack, openMatch }) {
                 {ratedPlayers.map((p) => {
                   const pos = getPlayerPosition(state, teamId, p.playerName);
                   const posDef = POSITIONS.find((pp) => pp.id === pos);
-                  const avg = p.weightedAvg ?? (p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0);
+                  const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
                   return (
                     <tr key={p.playerName} className="border-b border-slate-800/50">
                       <td className="py-1.5 pr-2">
@@ -4628,274 +4319,152 @@ function TeamRankingsSection({ state, openTeam }) {
   );
 }
 
-/* ========== ABA DE ESTATÍSTICAS AVANÇADAS ========== */
-function AdvancedStatsView({ state, openTeam }) {
-  const teamMetrics = useMemo(
-    () => computeTeamMetrics(state),
-    [state.matches, state.groups, state.koTeams],
-  );
-  const ownerMetrics = useMemo(
-    () => computeOwnerMetrics(state),
-    [state.matches, state.groups, state.koTeams, state.player1Name, state.player2Name],
-  );
-  const rowsWithData = useMemo(() => (
-    teamMetrics
-      .filter((row) => row.shotsCount > 0 || row.shotsAgainstCount > 0
-        || row.xGCount > 0 || row.xGAgainstCount > 0)
-      .sort((a, b) => (
-        b.xGSum - a.xGSum
-        || (b.xGAvg ?? -1) - (a.xGAvg ?? -1)
-        || a.name.localeCompare(b.name, 'pt-BR')
-      ))
-  ), [teamMetrics]);
+/* ========== Métricas avançadas de times (posse, finalizações, xG) ========== */
+function AdvancedTeamMetricsSection({ state, rows, openTeam }) {
+  const withPossession = [...rows].filter((r) => r.possessionAvg != null).sort((a, b) => b.possessionAvg - a.possessionAvg);
+  const withShots      = [...rows].filter((r) => r.shotsAvg != null).sort((a, b) => b.shotsSum - a.shotsSum);
+  const withXG         = [...rows].filter((r) => r.xGAvg != null).sort((a, b) => b.xGSum - a.xGSum);
+  const overperformers = [...rows]
+    .filter((r) => r.xGDiff != null && r.xGCount >= 1)
+    .sort((a, b) => b.xGDiff - a.xGDiff);
 
-  const hasData = rowsWithData.length > 0;
-
-  return (
-    <div className="space-y-6">
-      <Card className="p-5 border-lime-700/40 bg-gradient-to-br from-lime-950/25 to-slate-950">
-        <div className="flex items-start gap-3">
-          <Target className="w-7 h-7 text-lime-400 flex-shrink-0" />
-          <div>
-            <h1 className="text-xl font-black">Estatísticas avançadas</h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Produção ofensiva e defensiva de xG e finalizações por usuário e por time.
-              Os dados da prorrogação são somados ao tempo regulamentar e cada confronto continua valendo uma atuação.
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      {!hasData ? (
-        <Card className="p-8 text-center">
-          <BarChart3 className="w-9 h-9 text-slate-600 mx-auto mb-3" />
-          <h2 className="font-bold text-slate-300">Nenhuma estatística avançada preenchida</h2>
-          <p className="text-sm text-slate-500 mt-2 max-w-xl mx-auto">
-            Abra um jogo e preencha finalizações e xG no quadro de cada time.
-            Assim que um jogo com esses dados for concluído, os comparativos aparecem aqui.
-          </p>
-        </Card>
-      ) : (
-        <>
-          <AdvancedOwnerMetricsSection state={state} rows={ownerMetrics} />
-          <AdvancedTeamMetricsTable state={state} rows={rowsWithData} openTeam={openTeam} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function signedMetric(value, digits = 2) {
-  if (value == null) return '—';
-  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
-}
-
-function attackingXGTone(diff) {
-  if (diff == null) return null;
-  if (diff > 0.5) return 'positive';
-  if (diff < -0.5) return 'negative';
-  return null;
-}
-
-function defensiveXGTone(diff) {
-  if (diff == null) return null;
-  if (diff < -0.15) return 'positive';
-  if (diff > 0.15) return 'negative';
-  return null;
-}
-
-function AdvancedOwnerMetricsSection({ state, rows }) {
   return (
     <section>
       <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-        <Users className="w-4 h-4" /> Por usuário
+        <BarChart3 className="w-4 h-4" /> Estatísticas avançadas
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">— posse, finalizações, xG</span>
       </h2>
-      <div className="grid grid-cols-1 gap-3">
-        {rows.map((row) => {
-          const color = row.owner === 'p1'
-            ? (state.player1Color || '#06b6d4')
-            : (state.player2Color || '#f59e0b');
-          const hasData = row.shotsCount > 0 || row.shotsAgainstCount > 0
-            || row.xGCount > 0 || row.xGAgainstCount > 0;
-          return (
-            <Card
-              key={row.owner}
-              className="p-4"
-              style={{ backgroundColor: `${color}12`, borderColor: `${color}55` }}
-            >
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <div className="font-black text-lg" style={{ color }}>{row.name}</div>
-                <div className="text-[10px] uppercase tracking-wider text-slate-500">
-                  {row.teamsWithData} time{row.teamsWithData === 1 ? '' : 's'} com dados
-                </div>
-              </div>
-              {!hasData ? (
-                <div className="text-xs text-slate-500 italic">Sem métricas preenchidas.</div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-2">
-                  <AdvancedMetricCell
-                    label="xG total"
-                    value={row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}
-                    detail={row.xGCount > 0 ? `${row.xGCount} atuações` : 'sem dados'}
-                  />
-                  <AdvancedMetricCell
-                    label="Média de xG"
-                    value={row.xGAvg == null ? '—' : row.xGAvg.toFixed(2)}
-                    detail={row.xGAvg == null ? 'sem dados' : 'por atuação'}
-                  />
-                  <AdvancedMetricCell
-                    label="Gols vs xG"
-                    value={row.xGCount > 0 ? `${row.goals} / ${row.xGSum.toFixed(2)}` : '—'}
-                    detail={row.xGDiff == null ? 'sem dados' : `${signedMetric(row.xGDiff)} sobre o esperado`}
-                    tone={attackingXGTone(row.xGDiff)}
-                  />
-                  <AdvancedMetricCell
-                    label="Média de xG contra"
-                    value={row.xGAgainstAvg == null ? '—' : row.xGAgainstAvg.toFixed(2)}
-                    detail={row.xGAgainstCount > 0 ? `${row.xGAgainstCount} atuações` : 'sem dados'}
-                  />
-                  <AdvancedMetricCell
-                    label="GC médio vs xG contra"
-                    value={row.goalsAgainstAvg == null || row.xGAgainstAvg == null
-                      ? '—'
-                      : `${row.goalsAgainstAvg.toFixed(2)} / ${row.xGAgainstAvg.toFixed(2)}`}
-                    detail={row.goalsAgainstXGDiff == null
-                      ? 'sem dados'
-                      : `${signedMetric(row.goalsAgainstXGDiff)} vs esperado`}
-                    tone={defensiveXGTone(row.goalsAgainstXGDiff)}
-                  />
-                  <AdvancedMetricCell
-                    label="Média de finalizações"
-                    value={row.shotsAvg == null ? '—' : row.shotsAvg.toFixed(1)}
-                    detail={row.shotsCount > 0 ? `${row.shotsCount} atuações` : 'sem dados'}
-                  />
-                  <AdvancedMetricCell
-                    label="Média de finalizações contra"
-                    value={row.shotsAgainstAvg == null ? '—' : row.shotsAgainstAvg.toFixed(1)}
-                    detail={row.shotsAgainstCount > 0 ? `${row.shotsAgainstCount} atuações` : 'sem dados'}
-                  />
-                </div>
-              )}
-            </Card>
-          );
-        })}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {withPossession.length > 0 && (
+          <TeamRankList
+            title="Mais posse de bola"
+            icon={<span className="text-sm">⚽</span>}
+            list={withPossession.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.possessionAvg.toFixed(1)}%</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.possessionCount}j)</span>
+              </span>
+            )}
+          />
+        )}
+        {withShots.length > 0 && (
+          <TeamRankList
+            title="Mais finalizações"
+            icon={<span className="text-sm">🎯</span>}
+            list={withShots.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.shotsSum}</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.shotsAvg.toFixed(1)}/j)</span>
+              </span>
+            )}
+          />
+        )}
+        {withXG.length > 0 && (
+          <TeamRankList
+            title="Mais xG (perigo criado)"
+            icon={<span className="text-sm">📈</span>}
+            list={withXG.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => (
+              <span className="text-xs">
+                <span className="font-bold tabular-nums">{t.xGSum.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 font-normal ml-1">({t.xGAvg.toFixed(2)}/j)</span>
+              </span>
+            )}
+          />
+        )}
+        {overperformers.length > 0 && (
+          <TeamRankList
+            title="Gols vs xG"
+            icon={<span className="text-sm">⚡</span>}
+            list={overperformers.slice(0, 8)}
+            state={state} openTeam={openTeam}
+            render={(t) => {
+              const diff = t.xGDiff;
+              const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-red-400' : 'text-slate-300';
+              const label = diff > 0.5 ? 'acima' : diff < -0.5 ? 'abaixo' : 'no esperado';
+              return (
+                <span className="text-xs">
+                  <span className={cls('font-bold tabular-nums', color)}>
+                    {diff > 0 ? '+' : ''}{diff.toFixed(2)}
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-normal ml-1">{label}</span>
+                </span>
+              );
+            }}
+          />
+        )}
+      </div>
+      <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
+        Dados coletados apenas nos jogos onde as métricas foram preenchidas. Bônus proporcionais entram no Power Ranking dos times.
       </div>
     </section>
   );
 }
 
-function AdvancedMetricCell({ label, value, detail, tone }) {
-  const valueClass = tone === 'positive'
-    ? 'text-emerald-400'
-    : tone === 'negative'
-      ? 'text-red-400'
-      : 'text-slate-100';
-  return (
-    <div className="rounded-lg border border-slate-800/70 bg-slate-950/35 p-2.5 min-w-0">
-      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold leading-tight min-h-[22px]">{label}</div>
-      <div className={cls('text-lg font-black tabular-nums mt-0.5 whitespace-nowrap', valueClass)}>{value}</div>
-      <div className="text-[9px] text-slate-600 mt-0.5 leading-tight min-h-[20px]">{detail}</div>
-    </div>
-  );
-}
+/* ========== Ranking de goleiros ========== */
+function GoalkeeperRankingSection({ state, rows, openTeam }) {
+  const withData = rows.filter((r) => (r.saves || 0) > 0 || r.ratingCount > 0);
+  if (withData.length === 0) return null;
 
-function AdvancedTeamMetricsTable({ state, rows, openTeam }) {
   return (
     <section>
       <h2 className="text-sm font-bold uppercase tracking-wider text-lime-400 mb-3 flex items-center gap-2">
-        <Trophy className="w-4 h-4" /> Por time
-        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({rows.length} com dados)</span>
+        <span className="text-sm">🧤</span> Melhores goleiros
+        <span className="text-xs font-normal text-slate-500 normal-case tracking-normal">({withData.length})</span>
       </h2>
       <Card className="p-3">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1320px] text-xs">
+          <table className="w-full text-xs">
             <thead className="text-slate-500">
               <tr className="border-b border-slate-800">
-                <th className="text-left pb-2 pr-2 w-8">#</th>
-                <th className="text-left pb-2 pr-3">Time</th>
-                <th className="text-left pb-2 pr-3">Usuário</th>
-                <th className="text-right pb-2 px-2">xG total</th>
-                <th className="text-right pb-2 px-2">Média xG</th>
-                <th className="text-right pb-2 px-2">Gols vs xG</th>
-                <th className="text-right pb-2 px-2">Média xG contra</th>
-                <th className="text-right pb-2 px-2">GC médio vs xG contra</th>
-                <th className="text-right pb-2 px-2">Média finalizações</th>
-                <th className="text-right pb-2 pl-2">Média finalizações contra</th>
+                <th className="text-left pb-1.5 pr-2 w-8">#</th>
+                <th className="text-left pb-1.5 pr-2">Jogador</th>
+                <th className="text-left pb-1.5 pr-2">Time</th>
+                <th className="text-center pb-1.5 px-1" title="Defesas">🧤</th>
+                <th className="text-center pb-1.5 px-1" title="Gols sofridos pelo time">GC time</th>
+                <th className="text-center pb-1.5 px-1" title="Partidas com nota">Jogos</th>
+                <th className="text-center pb-1.5 px-1" title="Média das notas">⭐</th>
+                <th className="text-right pb-1.5 pl-2" title="Score do goleiro">Score</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, index) => {
-                const attackTone = attackingXGTone(row.xGDiff);
-                const defenseTone = defensiveXGTone(row.goalsAgainstXGDiff);
-                const attackClass = attackTone === 'positive'
-                  ? 'text-emerald-400'
-                  : attackTone === 'negative'
-                    ? 'text-red-400'
-                    : 'text-slate-300';
-                const defenseClass = defenseTone === 'positive'
-                  ? 'text-emerald-400'
-                  : defenseTone === 'negative'
-                    ? 'text-red-400'
-                    : 'text-slate-300';
-                return (
-                  <tr key={row.teamId} className="border-b border-slate-800/50 last:border-0">
-                    <td className="py-2 pr-2 font-bold tabular-nums text-slate-500">{index + 1}</td>
-                    <td className="py-2 pr-3">
-                      <button
-                        type="button"
-                        onClick={() => openTeam?.(row.teamId)}
-                        className="font-bold hover:text-lime-300 transition text-left"
-                      >
-                        <span className="mr-1.5">{row.flag}</span>{row.name}
+              {withData.map((p, i) => (
+                <tr key={`${p.teamId}|${p.playerName}`} className={cls(
+                  'border-b border-slate-800/40',
+                  i === 0 && 'bg-amber-950/20',
+                )}>
+                  <td className="py-1.5 pr-2 tabular-nums font-bold">
+                    <span className={cls(i === 0 ? 'text-amber-400' : i < 3 ? 'text-emerald-400' : 'text-slate-500')}>{i + 1}</span>
+                  </td>
+                  <td className="py-1.5 pr-2 font-bold">
+                    {p.playerName}
+                    {p.isChampionTeam && <Crown className="w-3 h-3 text-amber-400 inline ml-1" />}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {openTeam ? (
+                      <button onClick={() => openTeam(p.teamId)} className="hover:text-lime-300 transition text-left">
+                        <span className="mr-1">{p.teamFlag}</span>{p.teamName}
                       </button>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <OwnerTag
-                        owner={row.owner}
-                        p1Name={state.player1Name}
-                        p2Name={state.player2Name}
-                        p1Color={state.player1Color}
-                        p2Color={state.player2Color}
-                        size="xs"
-                      />
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      <div className="font-bold">{row.xGCount > 0 ? row.xGSum.toFixed(2) : '—'}</div>
-                      <div className="text-[9px] text-slate-600">{row.xGCount > 0 ? `${row.xGCount}j` : ''}</div>
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums font-bold">
-                      {row.xGAvg == null ? '—' : row.xGAvg.toFixed(2)}
-                    </td>
-                    <td className={cls('py-2 px-2 text-right tabular-nums font-black', attackClass)}>
-                      <div>{row.xGCount > 0 ? `${row.goals} / ${row.xGSum.toFixed(2)}` : '—'}</div>
-                      <div className="text-[9px] font-normal opacity-70">{row.xGDiff == null ? '' : signedMetric(row.xGDiff)}</div>
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      <div className="font-bold">{row.xGAgainstAvg == null ? '—' : row.xGAgainstAvg.toFixed(2)}</div>
-                      <div className="text-[9px] text-slate-600">{row.xGAgainstCount > 0 ? `${row.xGAgainstCount}j` : ''}</div>
-                    </td>
-                    <td className={cls('py-2 px-2 text-right tabular-nums font-black', defenseClass)}>
-                      <div>{row.goalsAgainstAvg == null || row.xGAgainstAvg == null
-                        ? '—'
-                        : `${row.goalsAgainstAvg.toFixed(2)} / ${row.xGAgainstAvg.toFixed(2)}`}</div>
-                      <div className="text-[9px] font-normal opacity-70">
-                        {row.goalsAgainstXGDiff == null ? '' : signedMetric(row.goalsAgainstXGDiff)}
-                      </div>
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums font-bold">
-                      {row.shotsAvg == null ? '—' : row.shotsAvg.toFixed(1)}
-                    </td>
-                    <td className="py-2 pl-2 text-right tabular-nums font-bold">
-                      {row.shotsAgainstAvg == null ? '—' : row.shotsAgainstAvg.toFixed(1)}
-                    </td>
-                  </tr>
-                );
-              })}
+                    ) : (<><span className="mr-1">{p.teamFlag}</span>{p.teamName}</>)}
+                  </td>
+                  <td className="py-1.5 px-1 text-center tabular-nums font-bold text-yellow-300">{p.saves || 0}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.goalsAgainst}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums text-slate-400">{p.matchesPlayed || 0}</td>
+                  <td className="py-1.5 px-1 text-center tabular-nums font-bold">
+                    {p.avg > 0 ? p.avg.toFixed(2) : '—'}
+                  </td>
+                  <td className="py-1.5 pl-2 text-right tabular-nums font-mono font-black text-lime-300">
+                    {p.gkScore.toFixed(1)}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
-        </div>
-        <div className="text-[10px] text-slate-600 italic mt-2 leading-relaxed">
-          “j” representa o número de atuações com aquele dado preenchido. Em “Gols vs xG”, valores positivos indicam gols acima do esperado. Em “GC médio vs xG contra”, valores negativos indicam menos gols sofridos que o esperado.
         </div>
       </Card>
     </section>
