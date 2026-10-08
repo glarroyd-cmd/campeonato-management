@@ -3,8 +3,6 @@
    Sem React. Funções puras. Importado por App.jsx e views/*.
    ============================================================ */
 
-import { getWc2026ThirdPlaceAssignments } from './wc2026ThirdPlaceTable.js';
-
 /* --- Times oficiais da Copa 2026 (sorteio 5/dez/2025 + repescagens mar/2026) --- */
 const WC2026_GROUPS = [
   { letter: 'A', teams: [
@@ -145,6 +143,16 @@ export const FORMATS = [
     initialGroups: makeGenericGroups(6, 4),
   },
   {
+    id: 'ko64',
+    name: 'Mata-mata direto (64)',
+    description: '64 times, sem fase de grupos. Rodadas de 64 e 32 em jogo único; ida e volta opcional a partir das oitavas.',
+    teams: 64,
+    hasGroups: false,
+    knockoutStages: ['r64', 'r32', 'r16', 'qf', 'sf', 'final'],
+    hasThirdPlace: true,
+    initialKoTeams: makeGenericKnockoutTeams(64),
+  },
+  {
     id: 'ko32',
     name: 'Mata-mata direto (32)',
     description: '32 times, sem fase de grupos.',
@@ -181,6 +189,7 @@ export function getFormat(id) {
 }
 
 export const STAGE_LABELS = {
+  r64: 'Rodada de 64',
   r32: 'Rodada de 32',
   r16: 'Oitavas',
   qf: 'Quartas',
@@ -192,7 +201,7 @@ export const STAGE_LABELS = {
 export const STAGE_ORDER_INDEX = {
   'group-1': 1, 'group-2': 2, 'group-3': 3,
   'group-4': 1.5, 'group-5': 2.5, 'group-6': 3.5, // ida e volta
-  r32: 4, r16: 5, qf: 6, sf: 7, third: 8, final: 8,
+  r64: 4, r32: 5, r16: 6, qf: 7, sf: 8, third: 9, final: 9,
 };
 
 export function matchStageKey(m) {
@@ -220,7 +229,7 @@ export const DEFAULT_TIEBREAKERS = ['points', 'goalDiff', 'goalsFor', 'h2hPoints
 export function defaultRules() {
   return {
     groupReturn: false,
-    knockoutReturn: false,
+    knockoutReturn: false,       // ida e volta a partir das oitavas (mantém chave legacy)
     tiebreakers: DEFAULT_TIEBREAKERS,
     drawMode: 'fifa',           // 'fifa' bracket fixo | 'random'
     extraTime: 'newMatch',      // 'newMatch' (sempre — placar dedicado)
@@ -442,7 +451,7 @@ function compareTiebreaker(tb, a, b, matches) {
 function getCardResetStages(cardRule, state) {
   if (cardRule === 'never' || cardRule === 'noSuspension') return [];
 
-  const knockoutOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
+  const knockoutOrder = ['r64', 'r32', 'r16', 'qf', 'sf', 'final'];
   const firstKO = knockoutOrder.find((s) => state?.matches?.some((m) => m.stage === s));
   const hasSf = state?.matches?.some((m) => m.stage === 'sf');
 
@@ -600,35 +609,26 @@ export function computeAllSuspended(state) {
    GERAÇÃO DO MATA-MATA
    ============================================================ */
 
-/* Chave oficial da fase de 32 da Copa 2026.
-
-   A ordem abaixo é a ordem ESTRUTURAL da chave, não a ordem cronológica
-   dos jogos. Assim, o gerador genérico consegue conectar corretamente
-   oitavas, quartas, semifinais e final ao parear confrontos consecutivos.
-
-   O slot "3rd:1X" significa: terceiro colocado atribuído ao vencedor do
-   grupo X pela tabela de 495 combinações do Anexo C do regulamento. */
-export const R32_PATTERN_WC2026 = Object.freeze([
-  { id: 74, home: '1E', away: '3rd:1E' },
-  { id: 77, home: '1I', away: '3rd:1I' },
-  { id: 73, home: '2A', away: '2B' },
-  { id: 75, home: '1F', away: '2C' },
-
-  { id: 83, home: '2K', away: '2L' },
-  { id: 84, home: '1H', away: '2J' },
-  { id: 81, home: '1D', away: '3rd:1D' },
-  { id: 82, home: '1G', away: '3rd:1G' },
-
-  { id: 76, home: '1C', away: '2F' },
-  { id: 78, home: '2E', away: '2I' },
-  { id: 79, home: '1A', away: '3rd:1A' },
-  { id: 80, home: '1L', away: '3rd:1L' },
-
-  { id: 86, home: '1J', away: '2H' },
-  { id: 88, home: '2D', away: '2G' },
-  { id: 85, home: '1B', away: '3rd:1B' },
-  { id: 87, home: '1K', away: '3rd:1K' },
-]);
+/* Padrão R32 da Copa 2026 — 16 jogos.
+   home/away referem-se a slots: 1A, 2A, ..., 3rd[1..N] */
+const R32_PATTERN_WC2026 = [
+  { id: 1,  home: '1A',  away: '3rd' },
+  { id: 2,  home: '1B',  away: '3rd' },
+  { id: 3,  home: '1C',  away: '3rd' },
+  { id: 4,  home: '1D',  away: '3rd' },
+  { id: 5,  home: '1E',  away: '3rd' },
+  { id: 6,  home: '1F',  away: '3rd' },
+  { id: 7,  home: '1G',  away: '3rd' },
+  { id: 8,  home: '1H',  away: '3rd' },
+  { id: 9,  home: '1I',  away: '2J' },
+  { id: 10, home: '1J',  away: '2I' },
+  { id: 11, home: '1K',  away: '2L' },
+  { id: 12, home: '1L',  away: '2K' },
+  { id: 13, home: '2A',  away: '2B' },
+  { id: 14, home: '2C',  away: '2D' },
+  { id: 15, home: '2E',  away: '2F' },
+  { id: 16, home: '2G',  away: '2H' },
+];
 
 /* R16 padrão pra 32 times (Copa antiga) */
 const R16_PATTERN_WC_CLASSIC = [
@@ -661,75 +661,114 @@ function getFirstKnockoutPattern(format) {
   return null;
 }
 
-function buildGroupedFirstStageSlots(state, format, standings, slotToTeam) {
-  const firstStagePattern = getFirstKnockoutPattern(format)?.pattern || [];
-  if (format.bestThirds <= 0) {
-    return firstStagePattern.map((p) => ({
-      home: slotToTeam[p.home] || null,
-      away: slotToTeam[p.away] || null,
-      officialMatchNumber: p.id || null,
-    }));
-  }
-
-  const thirds = standings
-    .map((standing) => ({ ...standing.rows[2], group: standing.letter }))
-    .filter((team) => team && team.id)
-    .sort(compareWithTiebreakers(
-      state,
-      state.matches.filter((match) => match.played),
-      state.rules.tiebreakers || DEFAULT_TIEBREAKERS,
-    ));
-  const bestThirds = thirds.slice(0, format.bestThirds);
-
-  if (format.id === 'wc2026') {
-    const thirdAssignments = getWc2026ThirdPlaceAssignments(bestThirds.map((team) => team.group));
-    const thirdTeamByGroup = Object.fromEntries(bestThirds.map((team) => [team.group, team.id]));
-
-    return firstStagePattern.map((p) => {
-      const resolve = (slotName) => {
-        if (slotName.startsWith('3rd:')) {
-          const winnerSlot = slotName.slice('3rd:'.length);
-          const thirdGroup = thirdAssignments?.[winnerSlot];
-          return thirdGroup ? (thirdTeamByGroup[thirdGroup] || null) : null;
-        }
-        return slotToTeam[slotName] || null;
-      };
-      return {
-        home: resolve(p.home),
-        away: resolve(p.away),
-        officialMatchNumber: p.id || null,
-      };
-    });
-  }
-
-  /* Outros formatos com melhores terceiros preservam o comportamento atual. */
-  let thirdIndex = 0;
-  return firstStagePattern.map((p) => {
-    const resolve = (slotName) => {
-      if (slotName === '3rd') return bestThirds[thirdIndex++]?.id || null;
-      return slotToTeam[slotName] || null;
-    };
-    return {
-      home: resolve(p.home),
-      away: resolve(p.away),
-      officialMatchNumber: p.id || null,
-    };
-  });
-}
-
 /* Quantos confrontos por stage subsequente. Vencedores se conectam ordenadamente */
 function getKnockoutChain(format) {
   const stages = format.knockoutStages;
   const counts = {
-    r32: 16, r16: 8, qf: 4, sf: 2, final: 1, third: 1,
+    r64: 32, r32: 16, r16: 8, qf: 4, sf: 2, final: 1, third: 1,
   };
   return stages.map((s) => ({ stage: s, count: counts[s] }));
+}
+
+const KNOCKOUT_STAGE_ORDER = ['r64', 'r32', 'r16', 'qf', 'sf', 'final'];
+
+/* A regra de ida e volta passa a valer somente a partir das oitavas.
+   A chave `knockoutReturn` é mantida para compatibilidade com torneios salvos. */
+export function getKnockoutLegCount(rules, stage) {
+  const enabled = !!rules?.knockoutReturn;
+  const stageIdx = KNOCKOUT_STAGE_ORDER.indexOf(stage);
+  const r16Idx = KNOCKOUT_STAGE_ORDER.indexOf('r16');
+  if (!enabled || stageIdx < 0 || stageIdx < r16Idx) return 1;
+  return 2;
+}
+
+/* O toggle pode mudar até a primeira partida das oitavas ser registrada. */
+export function canChangeKnockoutReturn(state) {
+  return !state?.matches?.some((m) => {
+    if (m.stage !== 'r16' || m.isExtra) return false;
+    const hasRatings = Object.values(m.ratings || {}).some((teamRatings) => Object.keys(teamRatings || {}).length > 0);
+    const hasTeamStats = Object.keys(m.teamStats || {}).length > 0;
+    return m.played || m.homeScore != null || m.awayScore != null || (m.events || []).length > 0 || hasRatings || hasTeamStats;
+  });
+}
+
+/* Recria apenas as oitavas em diante com a nova quantidade de pernas.
+   Fases anteriores (R64/R32), grupos e seus resultados são preservados. */
+export function reconfigureKnockoutReturn(state, enabled) {
+  if (!canChangeKnockoutReturn(state)) {
+    return { matches: state.matches, rules: state.rules, changed: false, locked: true };
+  }
+
+  const nextRules = { ...state.rules, knockoutReturn: !!enabled };
+  const format = getFormat(state.formatId);
+  if (!format.knockoutStages?.includes('r16')) {
+    return { matches: state.matches, rules: nextRules, changed: false, locked: false };
+  }
+
+  const r16Idx = KNOCKOUT_STAGE_ORDER.indexOf('r16');
+  const stagesToRebuild = format.knockoutStages.filter((stage) => {
+    const idx = KNOCKOUT_STAGE_ORDER.indexOf(stage);
+    return idx >= r16Idx;
+  });
+
+  /* Mantém grupos e fases anteriores exatamente como estão. Também mantém o jogo
+     de 3º lugar (sempre jogo único). Como nenhuma partida das oitavas começou,
+     não existem resultados válidos nas fases reconstruídas a preservar. */
+  const preserved = state.matches.filter((m) => {
+    if (m.stage === 'group' || m.stage === 'third') return true;
+    const idx = KNOCKOUT_STAGE_ORDER.indexOf(m.stage);
+    return idx >= 0 && idx < r16Idx;
+  });
+
+  const rebuilt = [];
+  for (const stage of stagesToRebuild) {
+    const current = state.matches.filter((m) => m.stage === stage && !m.isExtra);
+    const indices = [...new Set(current.map((m) => m.koIndex))].sort((a, b) => a - b);
+    const legsCount = getKnockoutLegCount(nextRules, stage);
+
+    for (const koIndex of indices) {
+      const confront = current.filter((m) => m.koIndex === koIndex);
+      const leg1 = confront.find((m) => m.leg === 1) || confront[0];
+      if (!leg1) continue;
+
+      /* Leg 1 define a orientação canônica do confronto. Isso preserva sorteios
+         aleatórios e swaps manuais já feitos antes das oitavas. */
+      const teamA = leg1.leg === 1 ? leg1.homeTeamId : leg1.awayTeamId;
+      const teamB = leg1.leg === 1 ? leg1.awayTeamId : leg1.homeTeamId;
+
+      for (let leg = 1; leg <= legsCount; leg++) {
+        const isLeg2 = leg === 2;
+        rebuilt.push({
+          ...leg1,
+          id: `k-${stage}-${koIndex + 1}-l${leg}`,
+          stage,
+          koIndex,
+          leg,
+          totalLegs: legsCount,
+          homeTeamId: isLeg2 ? teamB : teamA,
+          awayTeamId: isLeg2 ? teamA : teamB,
+          homeScore: null,
+          awayScore: null,
+          played: false,
+          events: [],
+          ratings: {},
+          teamStats: {},
+          extra: null,
+          penaltyWinner: null,
+        });
+      }
+    }
+  }
+
+  const combined = [...preserved, ...rebuilt];
+  const { matches } = propagateKnockoutWinners(combined);
+  return { matches, rules: nextRules, changed: true, locked: false };
 }
 
 /* Gera os matches da fase de mata-mata.
    Para formatos com grupos: usa as classificações resolvidas em slotToTeam.
    Para mata-mata direto: usa os times ordenados (com seeding fixo ou random).
-   rules.knockoutReturn => ida e volta no mata-mata.
+   rules.knockoutReturn => ida e volta somente a partir das oitavas.
    
    IMPORTANTE: aceita estado com fase de grupos PARCIAL — slots que não puderem
    ser preenchidos ficam null (e o app re-tenta quando os jogos forem atualizados). */
@@ -750,7 +789,28 @@ export function makeKnockoutMatches(state) {
       slotToTeam[`1${s.letter}`] = s.rows[0]?.id || null;
       slotToTeam[`2${s.letter}`] = s.rows[1]?.id || null;
     }
-    firstStageSlots = buildGroupedFirstStageSlots(state, format, standings, slotToTeam);
+    /* Melhores 3ºs */
+    if (format.bestThirds > 0) {
+      const thirds = standings
+        .map((s) => ({ ...s.rows[2], group: s.letter }))
+        .filter((t) => t && t.id)
+        .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
+      const bestThirds = thirds.slice(0, format.bestThirds);
+      let i = 0;
+      const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+      firstStageSlots = firstStagePattern.map((p) => {
+        const resolve = (slotName) => {
+          if (slotName === '3rd') return bestThirds[i++]?.id || null;
+          return slotToTeam[slotName] || null;
+        };
+        return { home: resolve(p.home), away: resolve(p.away) };
+      });
+    } else {
+      const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+      firstStageSlots = firstStagePattern.map((p) => ({
+        home: slotToTeam[p.home] || null, away: slotToTeam[p.away] || null,
+      }));
+    }
 
     /* Random draw: embaralha todos os times do primeiro stage,
        tentando evitar pares de mesmo dono */
@@ -779,7 +839,7 @@ export function makeKnockoutMatches(state) {
   /* Gera o primeiro stage */
   const firstStage = stages[0];
   const stageMatches = firstStageSlots.map((s, idx) => {
-    const legs = rules.knockoutReturn ? 2 : 1;
+    const legs = getKnockoutLegCount(rules, firstStage);
     const legMatches = [];
     for (let leg = 1; leg <= legs; leg++) {
       const isLeg2 = leg === 2;
@@ -787,7 +847,6 @@ export function makeKnockoutMatches(state) {
         id: `k-${firstStage}-${idx + 1}-l${leg}`,
         stage: firstStage,
         koIndex: idx,
-        officialMatchNumber: s.officialMatchNumber || null,
         leg, totalLegs: legs,
         homeTeamId: isLeg2 ? s.away : s.home,
         awayTeamId: isLeg2 ? s.home : s.away,
@@ -810,7 +869,7 @@ export function makeKnockoutMatches(state) {
     const chain = getKnockoutChain(format);
     const count = chain.find((c) => c.stage === stage)?.count || 1;
     for (let idx = 0; idx < count; idx++) {
-      const legs = rules.knockoutReturn ? 2 : 1;
+      const legs = getKnockoutLegCount(rules, stage);
       const feedHomeIdx = idx * 2;
       const feedAwayIdx = idx * 2 + 1;
       for (let leg = 1; leg <= legs; leg++) {
@@ -862,13 +921,6 @@ export function makeKnockoutMatches(state) {
 export function recalcKnockoutSeeding(state) {
   const format = getFormat(state.formatId);
   if (!format.hasGroups) return { matches: state.matches, changed: false };
-
-  /* Depois que o mata-mata começa, a chave inteira fica congelada.
-     Isso impede que uma atualização de regra ou de classificação altere
-     participantes de campeonatos que já tenham qualquer jogo eliminatório. */
-  const knockoutStarted = state.matches.some((m) => m.stage !== 'group' && m.played);
-  if (knockoutStarted) return { matches: state.matches, changed: false };
-
   if (state.rules?.drawMode === 'random') {
     /* No modo aleatório, o sorteio é feito uma vez só — não re-shuffles */
     return { matches: state.matches, changed: false };
@@ -878,22 +930,14 @@ export function recalcKnockoutSeeding(state) {
   const koFirstStage = state.matches.filter((m) => m.stage === firstStage && !m.isExtra);
   if (koFirstStage.length === 0) return { matches: state.matches, changed: false };
 
-  /* Times que já estão em confrontos com resultado não podem aparecer em
-     OUTRO confronto. Em ida e volta, porém, o segundo jogo do mesmo koIndex
-     precisa manter exatamente os mesmos times com mando invertido. */
-  const playedKoIndicesByTeam = new Map();
+  /* Times que já estão jogando em slots com resultado — não pode duplicar */
+  const usedInPlayedSlots = new Set();
   for (const m of koFirstStage) {
-    if (!m.played) continue;
-    for (const teamId of [m.homeTeamId, m.awayTeamId]) {
-      if (!teamId) continue;
-      if (!playedKoIndicesByTeam.has(teamId)) playedKoIndicesByTeam.set(teamId, new Set());
-      playedKoIndicesByTeam.get(teamId).add(m.koIndex);
+    if (m.played) {
+      if (m.homeTeamId) usedInPlayedSlots.add(m.homeTeamId);
+      if (m.awayTeamId) usedInPlayedSlots.add(m.awayTeamId);
     }
   }
-  const isUsedInOtherPlayedSlot = (teamId, koIndex) => {
-    const indices = playedKoIndicesByTeam.get(teamId);
-    return indices ? [...indices].some((index) => index !== koIndex) : false;
-  };
 
   /* Calcula slots ideais agora */
   const standings = format.initialGroups.map((g) => ({
@@ -904,7 +948,28 @@ export function recalcKnockoutSeeding(state) {
     slotToTeam[`1${s.letter}`] = s.rows[0]?.id || null;
     slotToTeam[`2${s.letter}`] = s.rows[1]?.id || null;
   }
-  const firstStageSlots = buildGroupedFirstStageSlots(state, format, standings, slotToTeam);
+  let firstStageSlots;
+  if (format.bestThirds > 0) {
+    const thirds = standings
+      .map((s) => ({ ...s.rows[2], group: s.letter }))
+      .filter((t) => t && t.id)
+      .sort(compareWithTiebreakers(state, state.matches.filter(m => m.played), state.rules.tiebreakers || DEFAULT_TIEBREAKERS));
+    const bestThirds = thirds.slice(0, format.bestThirds);
+    let i = 0;
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    firstStageSlots = firstStagePattern.map((p) => {
+      const resolve = (slotName) => {
+        if (slotName === '3rd') return bestThirds[i++]?.id || null;
+        return slotToTeam[slotName] || null;
+      };
+      return { home: resolve(p.home), away: resolve(p.away) };
+    });
+  } else {
+    const firstStagePattern = getFirstKnockoutPattern(format).pattern;
+    firstStageSlots = firstStagePattern.map((p) => ({
+      home: slotToTeam[p.home] || null, away: slotToTeam[p.away] || null,
+    }));
+  }
 
   let changed = false;
   const newMatches = state.matches.map((m) => {
@@ -914,25 +979,21 @@ export function recalcKnockoutSeeding(state) {
     const isLeg2 = m.leg === 2;
     let expectedHome = isLeg2 ? slot.away : slot.home;
     let expectedAway = isLeg2 ? slot.home : slot.away;
-    /* Jogos concluídos e trocas manuais são preservados. Os demais podem ser
-       recalculados, o que também migra torneios existentes para a chave correta
-       sem exigir a criação de um novo campeonato. */
-    if (m.played || m.manuallyOverridden) return m;
+    /* Só sobrescreve se este match específico ainda NÃO foi jogado */
+    if (m.played) return m;
     /* PROTEÇÃO ANTI-DUPLICATA: se o time esperado já está em um slot jogado,
        não coloca aqui — deixa null pro usuário resolver via swap manual */
-    if (expectedHome && isUsedInOtherPlayedSlot(expectedHome, m.koIndex)) expectedHome = null;
-    if (expectedAway && isUsedInOtherPlayedSlot(expectedAway, m.koIndex)) expectedAway = null;
-    if (
-      m.homeTeamId !== expectedHome ||
-      m.awayTeamId !== expectedAway ||
-      m.officialMatchNumber !== slot.officialMatchNumber
-    ) {
+    if (expectedHome && usedInPlayedSlots.has(expectedHome)) expectedHome = null;
+    if (expectedAway && usedInPlayedSlots.has(expectedAway)) expectedAway = null;
+    /* Não sobrescreve match já com times atribuídos (caso de swap manual anterior).
+       Só preenche se o slot está vazio (null). */
+    if (m.homeTeamId != null && m.awayTeamId != null) return m;
+    if (m.homeTeamId !== expectedHome || m.awayTeamId !== expectedAway) {
       changed = true;
       return {
         ...m,
-        officialMatchNumber: slot.officialMatchNumber || null,
-        homeTeamId: expectedHome,
-        awayTeamId: expectedAway,
+        homeTeamId: m.homeTeamId ?? expectedHome,
+        awayTeamId: m.awayTeamId ?? expectedAway,
       };
     }
     return m;
@@ -948,11 +1009,6 @@ export function recalcKnockoutSeeding(state) {
 export function repairKnockoutBracket(state) {
   const format = getFormat(state.formatId);
   if (!format.hasGroups) return { matches: state.matches, cleared: 0, duplicates: [] };
-
-  /* Nunca repara automaticamente uma chave que já começou. Um reparo tardio
-     poderia alterar confrontos ainda pendentes de um campeonato em andamento. */
-  const knockoutStarted = state.matches.some((m) => m.stage !== 'group' && m.played);
-  if (knockoutStarted) return { matches: state.matches, cleared: 0, duplicates: [] };
   if (!format.knockoutStages || format.knockoutStages.length === 0) {
     return { matches: state.matches, cleared: 0, duplicates: [] };
   }
@@ -1155,9 +1211,8 @@ export function propagateKnockoutWinners(matches) {
   let changed = false;
   for (const m of newMatches) {
     if (m.isExtra) continue;
-    /* Jogos concluídos são imutáveis. Swaps confirmados também não recebem
-       novamente os participantes das rodadas anteriores. */
-    if (m.played || m.manuallyOverridden) continue;
+    /* Respeita swaps manuais: matches marcados como override não são sobrescritos */
+    if (m.manuallyOverridden) continue;
     const feedHome = m.feedHome;
     const feedAway = m.feedAway;
     if (!feedHome && !feedAway) continue;
@@ -1257,20 +1312,10 @@ function findExtraForMainMatch(state, mainMatch) {
 function getConsolidatedMatch(state, mainMatch) {
   const extra = findExtraForMainMatch(state, mainMatch);
   if (!extra) return mainMatch;
-
-  /* Em confrontos de ida e volta, a ordem casa/fora da prorrogação pode ser
-     diferente da ordem do último jogo. Alinha o placar pelo ID do time antes
-     de somar, preservando a perspectiva do mainMatch. */
-  const extraScoreFor = (teamId) => {
-    if (extra.homeTeamId === teamId) return extra.homeScore ?? 0;
-    if (extra.awayTeamId === teamId) return extra.awayScore ?? 0;
-    return 0;
-  };
-
   return {
     ...mainMatch,
-    homeScore: (mainMatch.homeScore ?? 0) + extraScoreFor(mainMatch.homeTeamId),
-    awayScore: (mainMatch.awayScore ?? 0) + extraScoreFor(mainMatch.awayTeamId),
+    homeScore: (mainMatch.homeScore ?? 0) + (extra.homeScore ?? 0),
+    awayScore: (mainMatch.awayScore ?? 0) + (extra.awayScore ?? 0),
     events: [...(mainMatch.events || []), ...(extra.events || [])],
   };
 }
@@ -1325,7 +1370,6 @@ export function computePlayerStats(state) {
         owner: team?.owner || null,
         goals: 0, assists: 0, yellows: 0, reds: 0, saves: 0,
         ratingSum: 0, ratingCount: 0,
-        weightedRatingSum: 0, ratingWeight: 0, weightedAvg: 0,
         matchesPlayed: 0,
       });
     }
@@ -1336,7 +1380,6 @@ export function computePlayerStats(state) {
   const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
 
   for (const mainMatch of mainMatches) {
-    const stageWeight = getPlayerMatchStageWeight(mainMatch.stage);
     /* Eventos: soma main + prorrogação */
     const consolidated = getConsolidatedMatch(state, mainMatch);
     for (const ev of (consolidated.events || [])) {
@@ -1356,63 +1399,17 @@ export function computePlayerStats(state) {
         const stat = ensure(teamId, pname);
         stat.ratingSum += avg;
         stat.ratingCount++;
-        stat.weightedRatingSum += avg * stageWeight;
-        stat.ratingWeight += stageWeight;
         stat.matchesPlayed++;
       }
     }
   }
-  return [...map.values()].map((stat) => ({
-    ...stat,
-    weightedAvg: stat.ratingWeight > 0
-      ? stat.weightedRatingSum / stat.ratingWeight
-      : 0,
-  }));
-}
-
-/* Consolida as métricas avançadas do tempo regulamentar com a prorrogação.
-   - Finalizações e xG são somados.
-   - Posse é consolidada em uma média ponderada por duração (90 min + 30 min),
-     para que a porcentagem continue válida e não possa ultrapassar 100%.
-   - O confronto continua contando como uma única partida nas médias. */
-function getConsolidatedTeamStats(state, mainMatch, teamId) {
-  const extra = findExtraForMainMatch(state, mainMatch);
-  const mainStats = mainMatch.teamStats?.[teamId] || {};
-  const extraStats = extra?.teamStats?.[teamId] || {};
-
-  const parseNumber = (value) => {
-    if (value == null || value === '') return null;
-    const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-
-  const mainPossession = parseNumber(mainStats.possession);
-  const extraPossession = parseNumber(extraStats.possession);
-  let possession = null;
-  if (mainPossession != null && extraPossession != null) {
-    possession = ((mainPossession * 90) + (extraPossession * 30)) / 120;
-  } else {
-    possession = mainPossession ?? extraPossession;
-  }
-
-  const sumPeriods = (field) => {
-    const mainValue = parseNumber(mainStats[field]);
-    const extraValue = parseNumber(extraStats[field]);
-    if (mainValue == null && extraValue == null) return null;
-    return (mainValue || 0) + (extraValue || 0);
-  };
-
-  return {
-    possession,
-    shots: sumPeriods('shots'),
-    xG: sumPeriods('xG'),
-  };
+  return [...map.values()];
 }
 
 /* ============================================================
    MÉTRICAS AVANÇADAS DE TIME
    Posse de bola, finalizações e Expected Goals (xG) — por confronto.
-   Inclui os dados registrados na prorrogação e suporta preenchimento parcial.
+   Suporta preenchimento parcial (só nos jogos onde o usuário quis).
    ============================================================ */
 export function computeTeamMetrics(state) {
   const map = new Map();
@@ -1426,11 +1423,8 @@ export function computeTeamMetrics(state) {
         owner: team?.owner || null,
         possessionSum: 0, possessionCount: 0,
         shotsSum: 0, shotsCount: 0,
-        shotsAgainstSum: 0, shotsAgainstCount: 0,
         xGSum: 0, xGCount: 0,
-        xGAgainstSum: 0, xGAgainstCount: 0,
-        goals: 0, // gols nos mesmos jogos onde o xG próprio foi registrado
-        goalsAgainst: 0, // gols sofridos nos mesmos jogos onde o xG rival foi registrado
+        goals: 0, // gols nos mesmos jogos onde tem xG registrado (pra comparação)
       });
     }
     return map.get(teamId);
@@ -1440,56 +1434,41 @@ export function computeTeamMetrics(state) {
   for (const mainMatch of mainMatches) {
     if (!mainMatch.homeTeamId || !mainMatch.awayTeamId) continue;
     const consolidated = getConsolidatedMatch(state, mainMatch);
-    const homeTs = getConsolidatedTeamStats(state, mainMatch, mainMatch.homeTeamId);
-    const awayTs = getConsolidatedTeamStats(state, mainMatch, mainMatch.awayTeamId);
+    /* teamStats do main match (não tem no extra) */
+    const ts = mainMatch.teamStats || {};
+    const homeTs = ts[mainMatch.homeTeamId];
+    const awayTs = ts[mainMatch.awayTeamId];
 
     const h = ensure(mainMatch.homeTeamId);
     const a = ensure(mainMatch.awayTeamId);
 
-    if (homeTs.possession != null) {
-      h.possessionSum += homeTs.possession;
-      h.possessionCount++;
+    if (homeTs) {
+      if (homeTs.possession != null && homeTs.possession !== '') {
+        const p = parseFloat(homeTs.possession);
+        if (!isNaN(p)) { h.possessionSum += p; h.possessionCount++; }
+      }
+      if (homeTs.shots != null && homeTs.shots !== '') {
+        const s = parseInt(homeTs.shots, 10);
+        if (!isNaN(s)) { h.shotsSum += s; h.shotsCount++; }
+      }
+      if (homeTs.xG != null && homeTs.xG !== '') {
+        const x = parseFloat(homeTs.xG);
+        if (!isNaN(x)) { h.xGSum += x; h.xGCount++; h.goals += consolidated.homeScore; }
+      }
     }
-    if (homeTs.shots != null) {
-      h.shotsSum += homeTs.shots;
-      h.shotsCount++;
-    }
-    if (awayTs.shots != null) {
-      h.shotsAgainstSum += awayTs.shots;
-      h.shotsAgainstCount++;
-    }
-    if (homeTs.xG != null) {
-      h.xGSum += homeTs.xG;
-      h.xGCount++;
-      h.goals += consolidated.homeScore;
-    }
-    if (awayTs.xG != null) {
-      h.xGAgainstSum += awayTs.xG;
-      h.xGAgainstCount++;
-      h.goalsAgainst += consolidated.awayScore;
-    }
-
-    if (awayTs.possession != null) {
-      a.possessionSum += awayTs.possession;
-      a.possessionCount++;
-    }
-    if (awayTs.shots != null) {
-      a.shotsSum += awayTs.shots;
-      a.shotsCount++;
-    }
-    if (homeTs.shots != null) {
-      a.shotsAgainstSum += homeTs.shots;
-      a.shotsAgainstCount++;
-    }
-    if (awayTs.xG != null) {
-      a.xGSum += awayTs.xG;
-      a.xGCount++;
-      a.goals += consolidated.awayScore;
-    }
-    if (homeTs.xG != null) {
-      a.xGAgainstSum += homeTs.xG;
-      a.xGAgainstCount++;
-      a.goalsAgainst += consolidated.homeScore;
+    if (awayTs) {
+      if (awayTs.possession != null && awayTs.possession !== '') {
+        const p = parseFloat(awayTs.possession);
+        if (!isNaN(p)) { a.possessionSum += p; a.possessionCount++; }
+      }
+      if (awayTs.shots != null && awayTs.shots !== '') {
+        const s = parseInt(awayTs.shots, 10);
+        if (!isNaN(s)) { a.shotsSum += s; a.shotsCount++; }
+      }
+      if (awayTs.xG != null && awayTs.xG !== '') {
+        const x = parseFloat(awayTs.xG);
+        if (!isNaN(x)) { a.xGSum += x; a.xGCount++; a.goals += consolidated.awayScore; }
+      }
     }
   }
 
@@ -1497,91 +1476,11 @@ export function computeTeamMetrics(state) {
     ...r,
     possessionAvg: r.possessionCount > 0 ? r.possessionSum / r.possessionCount : null,
     shotsAvg: r.shotsCount > 0 ? r.shotsSum / r.shotsCount : null,
-    shotsAgainstAvg: r.shotsAgainstCount > 0 ? r.shotsAgainstSum / r.shotsAgainstCount : null,
     xGAvg: r.xGCount > 0 ? r.xGSum / r.xGCount : null,
-    xGDiff: r.xGCount > 0 ? r.goals - r.xGSum : null, // + = marcou acima do xG
-    xGAgainstAvg: r.xGAgainstCount > 0 ? r.xGAgainstSum / r.xGAgainstCount : null,
-    goalsAgainstAvg: r.xGAgainstCount > 0 ? r.goalsAgainst / r.xGAgainstCount : null,
-    goalsAgainstXGDiff: r.xGAgainstCount > 0
-      ? (r.goalsAgainst / r.xGAgainstCount) - (r.xGAgainstSum / r.xGAgainstCount)
-      : null, // + = sofreu mais que o xG contra; - = sofreu menos
+    xGDiff: r.xGCount > 0 ? r.goals - r.xGSum : null, // + = overperformer, - = underperformer
     conversionRate: (r.shotsSum > 0 && r.shotsCount > 0) ? (r.goals / r.shotsSum) * 100 : null,
   }));
   return rows;
-}
-
-/* Agrega as mesmas métricas por usuário/dono, ponderando as médias pelo
-   número de jogos em que cada dado foi efetivamente preenchido. */
-export function computeOwnerMetrics(state) {
-  const owners = {
-    p1: {
-      owner: 'p1', name: state.player1Name || 'Jogador 1', teamsWithData: 0,
-      possessionSum: 0, possessionCount: 0,
-      shotsSum: 0, shotsCount: 0,
-      shotsAgainstSum: 0, shotsAgainstCount: 0,
-      xGSum: 0, xGCount: 0, goals: 0,
-      xGAgainstSum: 0, xGAgainstCount: 0, goalsAgainst: 0,
-    },
-    p2: {
-      owner: 'p2', name: state.player2Name || 'Jogador 2', teamsWithData: 0,
-      possessionSum: 0, possessionCount: 0,
-      shotsSum: 0, shotsCount: 0,
-      shotsAgainstSum: 0, shotsAgainstCount: 0,
-      xGSum: 0, xGCount: 0, goals: 0,
-      xGAgainstSum: 0, xGAgainstCount: 0, goalsAgainst: 0,
-    },
-  };
-
-  for (const row of computeTeamMetrics(state)) {
-    const target = owners[row.owner];
-    if (!target) continue;
-    const hasData = row.shotsCount > 0 || row.shotsAgainstCount > 0
-      || row.xGCount > 0 || row.xGAgainstCount > 0;
-    if (hasData) target.teamsWithData++;
-    target.possessionSum += row.possessionSum;
-    target.possessionCount += row.possessionCount;
-    target.shotsSum += row.shotsSum;
-    target.shotsCount += row.shotsCount;
-    target.shotsAgainstSum += row.shotsAgainstSum;
-    target.shotsAgainstCount += row.shotsAgainstCount;
-    target.xGSum += row.xGSum;
-    target.xGCount += row.xGCount;
-    target.goals += row.goals;
-    target.xGAgainstSum += row.xGAgainstSum;
-    target.xGAgainstCount += row.xGAgainstCount;
-    target.goalsAgainst += row.goalsAgainst;
-  }
-
-  return Object.values(owners).map((row) => ({
-    ...row,
-    possessionAvg: row.possessionCount > 0 ? row.possessionSum / row.possessionCount : null,
-    shotsAvg: row.shotsCount > 0 ? row.shotsSum / row.shotsCount : null,
-    shotsAgainstAvg: row.shotsAgainstCount > 0 ? row.shotsAgainstSum / row.shotsAgainstCount : null,
-    xGAvg: row.xGCount > 0 ? row.xGSum / row.xGCount : null,
-    xGDiff: row.xGCount > 0 ? row.goals - row.xGSum : null,
-    xGAgainstAvg: row.xGAgainstCount > 0 ? row.xGAgainstSum / row.xGAgainstCount : null,
-    goalsAgainstAvg: row.xGAgainstCount > 0 ? row.goalsAgainst / row.xGAgainstCount : null,
-    goalsAgainstXGDiff: row.xGAgainstCount > 0
-      ? (row.goalsAgainst / row.xGAgainstCount) - (row.xGAgainstSum / row.xGAgainstCount)
-      : null,
-  }));
-}
-
-function computeGoalsAgainstByTeam(state) {
-  const teamGoalsAgainst = {};
-  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
-  for (const mainMatch of mainMatches) {
-    const consolidated = getConsolidatedMatch(state, mainMatch);
-    if (mainMatch.homeTeamId) {
-      teamGoalsAgainst[mainMatch.homeTeamId] =
-        (teamGoalsAgainst[mainMatch.homeTeamId] || 0) + consolidated.awayScore;
-    }
-    if (mainMatch.awayTeamId) {
-      teamGoalsAgainst[mainMatch.awayTeamId] =
-        (teamGoalsAgainst[mainMatch.awayTeamId] || 0) + consolidated.homeScore;
-    }
-  }
-  return teamGoalsAgainst;
 }
 
 /* ============================================================
@@ -1593,34 +1492,20 @@ export function computeGoalkeeperRankings(state) {
     const pos = getPlayerPosition(state, p.teamId, p.playerName);
     return pos === 'GOL';
   });
-  const teamGoalsAgainst = computeGoalsAgainstByTeam(state);
-  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
+  /* Anexa gols sofridos pelo time (aproximação de "gols contra o goleiro") */
+  const teamGoalsAgainst = {};
+  const mainMatches = state.matches.filter((m) => m.played && !m.autoPlayed && !m.isExtra);
+  for (const mainMatch of mainMatches) {
+    const consolidated = getConsolidatedMatch(state, mainMatch);
+    if (mainMatch.homeTeamId) teamGoalsAgainst[mainMatch.homeTeamId] = (teamGoalsAgainst[mainMatch.homeTeamId] || 0) + consolidated.awayScore;
+    if (mainMatch.awayTeamId) teamGoalsAgainst[mainMatch.awayTeamId] = (teamGoalsAgainst[mainMatch.awayTeamId] || 0) + consolidated.homeScore;
+  }
   return goalkeepers.map((p) => {
-    const simpleAvg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
-    const avg = p.weightedAvg ?? simpleAvg;
+    const avg = p.ratingCount > 0 ? p.ratingSum / p.ratingCount : 0;
     const goalsAgainst = teamGoalsAgainst[p.teamId] || 0;
-    const stageReached = maxStageByTeam[p.teamId] ?? 0;
-    const isChampionTeam = championTeamId === p.teamId;
-    const context = getPlayerContextBonus(p.matchesPlayed, stageReached, isChampionTeam);
-    const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
-    /* Score: defesas × 3 + média ponderada × 8 - gols sofridos × 0,5.
-       O núcleo é modulado pela campanha e depois recebe os bônus de contexto. */
-    const coreScore = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5;
-    const score = coreScore * campaignMultiplier + context.total;
-    return {
-      ...p,
-      avg,
-      simpleAvg,
-      goalsAgainst,
-      stageReached,
-      isChampionTeam,
-      contextBonus: context.total,
-      matchesBonus: context.matchesBonus,
-      stageBonus: context.stageBonus,
-      championBonus: context.championBonus,
-      campaignMultiplier,
-      gkScore: score,
-    };
+    /* Score: defesas × 3 + média × 8 - gols sofridos * 0.5 + bonus por partidas */
+    const score = (p.saves || 0) * 3 + avg * 8 - goalsAgainst * 0.5 + Math.log2((p.matchesPlayed || 0) + 1) * 2;
+    return { ...p, avg, goalsAgainst, gkScore: score };
   }).sort((a, b) => b.gkScore - a.gkScore);
 }
 export function computeBestThirds(state) {
@@ -1729,117 +1614,19 @@ export function getPlayerPosition(state, teamId, playerName) {
   return state.playerPositions?.[key] || null;
 }
 
-/* Contexto competitivo usado nos rankings individuais.
-   A campanha passou a ter influência relevante: o desempenho nas fases finais
-   pesa mais na média e o score-base é ajustado pela profundidade alcançada. */
-const PLAYER_STAGE_SCORE = {
-  group: 0,
-  r32: 1,
-  r16: 2,
-  qf: 3,
-  sf: 4,
-  third: 4.5,
-  final: 5,
-};
-
-/* Peso de cada partida na média individual do torneio.
-   Uma atuação na final vale 2,75x uma atuação na fase de grupos. A curva é
-   progressiva para que o desempenho nas rodadas decisivas tenha mais impacto,
-   sem apagar o que o jogador fez no início da competição. */
-export const PLAYER_MATCH_STAGE_WEIGHT = Object.freeze({
-  group: 1,
-  r32: 1.2,
-  r16: 1.45,
-  qf: 1.8,
-  sf: 2.25,
-  third: 2.1,
-  final: 2.75,
-});
-
-function getPlayerMatchStageWeight(stage) {
-  return PLAYER_MATCH_STAGE_WEIGHT[stage] ?? 1;
-}
-
-/* A campanha também modula levemente o score-base. Isso evita que uma sequência
-   curta de notas altas nas primeiras rodadas domine a seleção do campeonato
-   sobre jogadores que mantiveram bom nível até as fases decisivas. */
-function getPlayerCampaignMultiplier(stageReached) {
-  if (stageReached >= 5) return 1;
-  if (stageReached >= 4.5) return 0.985;
-  if (stageReached >= 4) return 0.97;
-  if (stageReached >= 3) return 0.91;
-  if (stageReached >= 2) return 0.85;
-  if (stageReached >= 1) return 0.78;
-  return 0.72;
-}
-
-function computePlayerTournamentContext(state) {
-  const maxStageByTeam = {};
-  for (const m of state.matches) {
-    /* Se o time já foi propagado para uma fase, ele já alcançou essa fase,
-       mesmo que o confronto ainda não tenha sido disputado. */
-    if (m.stage === 'group' || !m.homeTeamId || !m.awayTeamId) continue;
-    const stageReached = PLAYER_STAGE_SCORE[m.stage] ?? 0;
-    for (const teamId of [m.homeTeamId, m.awayTeamId]) {
-      if ((maxStageByTeam[teamId] ?? -1) < stageReached) {
-        maxStageByTeam[teamId] = stageReached;
-      }
-    }
-  }
-  return {
-    maxStageByTeam,
-    championTeamId: getChampion(state)?.id || null,
-  };
-}
-
-function getPlayerContextBonus(matchesPlayed, stageReached, isChampionTeam) {
-  /* O log evita que cada jogo extra tenha o mesmo peso. O teto mantém o
-     volume como um bônus leve, mesmo em campeonatos longos. */
-  const matchesBonus = Math.min(
-    1.5,
-    Math.log2(Math.max(0, matchesPlayed || 0) + 1) * 0.5,
-  );
-  /* A progressão não é linear: quartas, semifinal e final têm saltos maiores
-     porque representam desempenho sustentado contra adversários mais fortes. */
-  let stageBonus = 0;
-  if (stageReached >= 5) stageBonus = 8;
-  else if (stageReached >= 4.5) stageBonus = 6.5;
-  else if (stageReached >= 4) stageBonus = 6;
-  else if (stageReached >= 3) stageBonus = 4;
-  else if (stageReached >= 2) stageBonus = 2.5;
-  else if (stageReached >= 1) stageBonus = 1;
-  const championBonus = isChampionTeam ? 2 : 0;
-  return {
-    matchesBonus,
-    stageBonus,
-    championBonus,
-    total: matchesBonus + stageBonus + championBonus,
-  };
-}
-
 /* Power score adaptado por posição.
    Goleiros valorizam mais a nota; atacantes mais o gol. */
 function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
-  const contextBonus = getPlayerContextBonus(
-    s.matchesPlayed ?? s.ratingCount,
-    maxStage,
-    isChampionTeam,
-  ).total;
+  const stageBonus = (maxStage ?? 0) * 3;
+  const champBonus = isChampionTeam ? 6 : 0;
+  const matchesBonus = Math.log2(s.ratingCount + 1) * 2;
   const cardPenalty = (s.yellows * 1) + (s.reds * 4);
-  const avg = s.weightedAvg ?? s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
-  const campaignMultiplier = getPlayerCampaignMultiplier(maxStage);
-
-  /* Para goleiros, usa os critérios antes exibidos no ranking separado,
-     agora com média ponderada por fase e relevância da campanha. */
-  if (position === 'GOL') {
-    const coreScore = (s.saves || 0) * 3
-      + avg * 8
-      - (s.goalsAgainst || 0) * 0.5;
-    return coreScore * campaignMultiplier + contextBonus;
-  }
-
+  const avg = s.avg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
   let coreScore;
   switch (position) {
+    case 'GOL':
+      coreScore = (avg * 12) + (s.assists * 1.5) + ((s.saves || 0) * 2);
+      break;
     case 'ZAG':
       coreScore = (avg * 9) + (s.goals * 3) + (s.assists * 1.5);
       break;
@@ -1855,43 +1642,33 @@ function getPositionAdjustedScore(s, position, maxStage, isChampionTeam) {
     default:
       coreScore = (avg * 6) + (s.goals * 4) + (s.assists * 2);
   }
-  return coreScore * campaignMultiplier + contextBonus - cardPenalty;
+  return coreScore + stageBonus + champBonus + matchesBonus - cardPenalty;
 }
 
 /* Computes player stats with position info and position-adjusted score */
 export function computePlayersWithPosition(state) {
   const stats = computePlayerStats(state);
-  const goalsAgainstByTeam = computeGoalsAgainstByTeam(state);
-  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
+  const stageScore = { group: 0, r64: 0.5, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const champ = getChampion(state);
   return stats
-    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
+    .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0)
     .map((s) => {
       const position = getPlayerPosition(state, s.teamId, s.playerName);
-      const simpleAvg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
-      const avg = s.weightedAvg ?? simpleAvg;
-      const goalsAgainst = goalsAgainstByTeam[s.teamId] || 0;
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
       const stageReached = maxStageByTeam[s.teamId] ?? 0;
-      const isChampionTeam = championTeamId === s.teamId;
-      const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
-      const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
+      const isChampionTeam = champ?.id === s.teamId;
       const posScore = position
-        ? getPositionAdjustedScore({ ...s, avg, weightedAvg: avg, goalsAgainst }, position, stageReached, isChampionTeam)
+        ? getPositionAdjustedScore({ ...s, avg }, position, stageReached, isChampionTeam)
         : null;
-      return {
-        ...s,
-        avg,
-        simpleAvg,
-        goalsAgainst,
-        position,
-        stageReached,
-        isChampionTeam,
-        contextBonus: context.total,
-        matchesBonus: context.matchesBonus,
-        stageBonus: context.stageBonus,
-        championBonus: context.championBonus,
-        campaignMultiplier,
-        posScore,
-      };
+      return { ...s, avg, position, stageReached, isChampionTeam, posScore };
     });
 }
 
@@ -1987,7 +1764,7 @@ export function getNotablePlayersForTeam(state, teamId, limit = 3) {
   if (stats.length === 0) return [];
   const ranked = stats
     .map((s) => {
-      const avg = s.weightedAvg ?? (s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0);
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
       const score = (avg * 10) + (s.goals * 3) + (s.assists * 1.5);
       return { ...s, avg, score };
     })
@@ -2081,7 +1858,7 @@ export function computePowerRankingTeams(state) {
   const teamMetrics = computeTeamMetrics(state);
   const metricsByTeam = Object.fromEntries(teamMetrics.map((m) => [m.teamId, m]));
   /* Identifica a fase máxima atingida por cada time no mata-mata */
-  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const stageScore = { group: 0, r64: 0.5, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
   const maxStageByTeam = {};
   for (const m of state.matches) {
     if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
@@ -2126,44 +1903,39 @@ export function computePowerRankingTeams(state) {
 
 /* ============================================================
    POWER RANKING DE JOGADORES EM CAMPO
-   Combina média ponderada por fase, gols/assistências e profundidade da campanha.
+   Combina notas, gols/assistências, e fase máxima do time.
    ============================================================ */
 export function computePowerRankingPlayers(state) {
   const playerStats = computePlayerStats(state);
-  const { maxStageByTeam, championTeamId } = computePlayerTournamentContext(state);
+  /* Fase máxima do time */
+  const stageScore = { group: 0, r64: 0.5, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const maxStageByTeam = {};
+  for (const m of state.matches) {
+    if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
+    const sScore = stageScore[m.stage] ?? 0;
+    for (const tid of [m.homeTeamId, m.awayTeamId]) {
+      if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
+    }
+  }
+  const champ = getChampion(state);
   return playerStats
     .filter((s) => s.ratingCount >= 1 || s.goals > 0 || s.assists > 0 || s.saves > 0)
     .map((s) => {
-      const simpleAvg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
-      const avg = s.weightedAvg ?? simpleAvg;
-      const stageReached = maxStageByTeam[s.teamId] ?? 0;
-      const isChampionTeam = championTeamId === s.teamId;
-      const context = getPlayerContextBonus(s.matchesPlayed, stageReached, isChampionTeam);
-      const campaignMultiplier = getPlayerCampaignMultiplier(stageReached);
+      const avg = s.ratingCount > 0 ? s.ratingSum / s.ratingCount : 0;
+      const stageBonus = (maxStageByTeam[s.teamId] ?? 0) * 3;
+      const isChampionTeam = champ?.id === s.teamId;
       const cardPenalty = (s.yellows * 1) + (s.reds * 4);
       const savesBonus = (s.saves || 0) * 1.5; // defesas contribuem (importante pra goleiros)
-      const coreScore =
+      const score =
         (avg * 6) +
         (s.goals * 4) +
         (s.assists * 2) +
-        savesBonus;
-      const score =
-        (coreScore * campaignMultiplier) +
-        context.total -
+        savesBonus +
+        stageBonus +
+        (isChampionTeam ? 6 : 0) +
+        Math.log2(s.ratingCount + 1) * 2 -
         cardPenalty;
-      return {
-        ...s,
-        avg,
-        simpleAvg,
-        stageReached,
-        isChampionTeam,
-        contextBonus: context.total,
-        matchesBonus: context.matchesBonus,
-        stageBonus: context.stageBonus,
-        championBonus: context.championBonus,
-        campaignMultiplier,
-        powerScore: score,
-      };
+      return { ...s, avg, stageReached: maxStageByTeam[s.teamId] ?? 0, isChampionTeam, powerScore: score };
     })
     .sort((a, b) => b.powerScore - a.powerScore);
 }
@@ -2387,7 +2159,7 @@ export function computeOffensiveDependency(state) {
    ============================================================ */
 export function computeTournamentSurprises(state) {
   const stats = computeTeamStats(state);
-  const stageScore = { group: 0, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
+  const stageScore = { group: 0, r64: 0.5, r32: 1, r16: 2, qf: 3, sf: 4, third: 4.5, final: 5 };
   const maxStageByTeam = {};
   for (const m of state.matches) {
     if (m.stage === 'group' || !m.played || !m.homeTeamId || !m.awayTeamId) continue;
@@ -2396,7 +2168,7 @@ export function computeTournamentSurprises(state) {
       if ((maxStageByTeam[tid] ?? -1) < sScore) maxStageByTeam[tid] = sScore;
     }
   }
-  const stageName = { 0: 'Grupos', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º lugar', 5: 'Final' };
+  const stageName = { 0: 'Grupos', 0.5: 'R64', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º lugar', 5: 'Final' };
   return stats
     .filter((t) => t.P > 0)
     .map((t) => {
@@ -3003,144 +2775,76 @@ export function computeBestXIForRound(state, roundKey) {
 /* ============================================================
    RESHUFFLE MATA-MATA: troca times de confrontos com mesmo dono
    ============================================================ */
-function knockoutStageOrder(state) {
+export function reshuffleSameOwnerKnockout(state) {
   const format = getFormat(state.formatId);
-  return [...(format.knockoutStages || []), ...(format.hasThirdPlace ? ['third'] : [])];
-}
+  if (!format.knockoutStages || format.knockoutStages.length === 0) return state.matches;
+  const firstStage = format.knockoutStages[0];
 
-function hasPlayedInLaterKnockoutStage(state, stage) {
-  const order = knockoutStageOrder(state);
-  const stageIndex = order.indexOf(stage);
-  if (stageIndex < 0) return true;
-  const mainFinalIndex = order.indexOf('final');
+  /* Pega TODOS os matches do mata-mata pra também atualizar a 2ª "perna" se houver */
+  const allKoMatches = state.matches.filter((m) => m.stage !== 'group');
 
-  return state.matches.some((m) => {
-    if (m.stage === 'group' || !m.played) return false;
-    const otherIndex = order.indexOf(m.stage);
-    if (otherIndex < 0) return false;
-
-    /* O 3º lugar nasce das semifinais em paralelo com a final. Ele bloqueia
-       alterações nas semifinais, mas não interfere em fases posteriores. */
-    if (m.stage === 'third') return stage === 'sf' || stageIndex < order.indexOf('sf');
-    if (stage === 'third') return false;
-    if (mainFinalIndex >= 0 && otherIndex > mainFinalIndex) return false;
-    return otherIndex > stageIndex;
-  });
-}
-
-function getStageConfronts(state, stage) {
-  const matches = state.matches.filter((m) => m.stage === stage && !m.isExtra);
-  const grouped = new Map();
-  for (const match of matches) {
-    if (!grouped.has(match.koIndex)) grouped.set(match.koIndex, []);
-    grouped.get(match.koIndex).push(match);
+  /* Agrupa confrontos do PRIMEIRO stage (por koIndex) e identifica mesmo dono */
+  const firstStageMatches = allKoMatches.filter((m) => m.stage === firstStage && !m.isExtra);
+  const byKoIndex = {};
+  for (const m of firstStageMatches) {
+    const k = m.koIndex;
+    if (!byKoIndex[k]) byKoIndex[k] = [];
+    byKoIndex[k].push(m);
   }
-
-  return [...grouped.entries()].map(([koIndex, legs]) => {
-    const sample = [...legs].sort((a, b) => a.leg - b.leg)[0];
+  /* Pra cada koIndex (que é um confronto), identifica home/away owner */
+  const confronts = Object.entries(byKoIndex).map(([koIdx, legs]) => {
+    const sample = legs[0];
     const homeTeam = getTeamById(state, sample.homeTeamId);
     const awayTeam = getTeamById(state, sample.awayTeamId);
-    const allLegsPending = legs.every((leg) => !leg.played);
+    const allLegsPending = legs.every((l) => !l.played);
     return {
-      koIndex: Number(koIndex),
-      legs,
+      koIndex: Number(koIdx),
       homeTeamId: sample.homeTeamId,
       awayTeamId: sample.awayTeamId,
-      homeOwner: homeTeam?.owner || null,
-      awayOwner: awayTeam?.owner || null,
-      sameOwner: !!(homeTeam?.owner && awayTeam?.owner && homeTeam.owner === awayTeam.owner),
+      homeOwner: homeTeam?.owner,
+      awayOwner: awayTeam?.owner,
+      sameOwner: homeTeam?.owner && awayTeam?.owner && homeTeam.owner === awayTeam.owner,
       ownerKey: homeTeam?.owner === awayTeam?.owner ? homeTeam?.owner : null,
-      canSwap: allLegsPending && !!sample.homeTeamId && !!sample.awayTeamId,
+      canSwap: allLegsPending,
     };
   });
-}
 
-/* Informa se uma fase possui ao menos um confronto P1×P1 e um P2×P2
-   que possam ser convertidos em dois confrontos entre donos diferentes. */
-export function getSameOwnerKnockoutSwapOptions(state, stage) {
-  const format = getFormat(state.formatId);
-  if (!(format.knockoutStages || []).includes(stage)) {
-    return { stage, total: 0, p1: 0, p2: 0, swappable: 0, blockedByLaterResults: true };
-  }
-
-  const blockedByLaterResults = hasPlayedInLaterKnockoutStage(state, stage);
-  const confronts = getStageConfronts(state, stage);
-  const eligible = confronts.filter((c) => c.sameOwner && c.canSwap);
-  const p1 = eligible.filter((c) => c.ownerKey === 'p1').length;
-  const p2 = eligible.filter((c) => c.ownerKey === 'p2').length;
-
-  return {
-    stage,
-    total: eligible.length,
-    p1,
-    p2,
-    swappable: blockedByLaterResults ? 0 : Math.min(p1, p2),
-    blockedByLaterResults,
-  };
-}
-
-/* ============================================================
-   RESHUFFLE MATA-MATA
-
-   Funciona em qualquer fase com ao menos um confronto P1×P1 e um P2×P2.
-   Somente esses confrontos são alterados; confrontos mistos permanecem
-   exatamente como estavam. A mudança é marcada como override confirmado,
-   permitindo que o vencedor siga normalmente para a fase seguinte.
-   ============================================================ */
-export function reshuffleSameOwnerKnockout(state, requestedStage = null) {
-  const format = getFormat(state.formatId);
-  if (!format.knockoutStages || format.knockoutStages.length === 0) {
-    return { matches: state.matches, swappedPairs: 0, stage: null };
-  }
-
-  const candidateStages = requestedStage
-    ? [requestedStage]
-    : format.knockoutStages;
-  const stage = candidateStages.find((item) => (
-    getSameOwnerKnockoutSwapOptions(state, item).swappable > 0
-  ));
-  if (!stage) return { matches: state.matches, swappedPairs: 0, stage: null };
-
-  const confronts = getStageConfronts(state, stage);
+  /* Agrupa same-owner por dono */
   const sameP1 = confronts.filter((c) => c.sameOwner && c.ownerKey === 'p1' && c.canSwap);
   const sameP2 = confronts.filter((c) => c.sameOwner && c.ownerKey === 'p2' && c.canSwap);
 
-  const p1Shuffled = shuffle([...sameP1]);
-  const p2Shuffled = shuffle([...sameP2]);
-  const swapPairs = Math.min(p1Shuffled.length, p2Shuffled.length);
-  if (swapPairs === 0) return { matches: state.matches, swappedPairs: 0, stage };
+  /* Embaralha */
+  const p1Sh = [...sameP1].sort(() => Math.random() - 0.5);
+  const p2Sh = [...sameP2].sort(() => Math.random() - 0.5);
 
-  const swapMap = new Map();
+  const swapPairs = Math.min(p1Sh.length, p2Sh.length);
+  if (swapPairs === 0) return { matches: state.matches, swappedPairs: 0 };
+
+  /* Pra cada par (P1-P1) ↔ (P2-P2):
+     Confronto 1: home=A1(P1), away=A2(P1)
+     Confronto 2: home=B1(P2), away=B2(P2)
+     Resultado:
+     Confronto 1: home=A1(P1), away=B1(P2)
+     Confronto 2: home=A2(P1), away=B2(P2)
+     Movemos A2 para Confronto 2 (como home_v2) e B1 para Confronto 1 (como away_v1). */
+  const swapMap = {}; // koIndex → { newHomeId, newAwayId }
   for (let i = 0; i < swapPairs; i++) {
-    const p1Confront = p1Shuffled[i];
-    const p2Confront = p2Shuffled[i];
-
-    swapMap.set(p1Confront.koIndex, {
-      newHomeId: p1Confront.homeTeamId,
-      newAwayId: p2Confront.homeTeamId,
-    });
-    swapMap.set(p2Confront.koIndex, {
-      newHomeId: p1Confront.awayTeamId,
-      newAwayId: p2Confront.awayTeamId,
-    });
+    const c1 = p1Sh[i]; // P1 vs P1
+    const c2 = p2Sh[i]; // P2 vs P2
+    swapMap[c1.koIndex] = { newHomeId: c1.homeTeamId, newAwayId: c2.homeTeamId };
+    swapMap[c2.koIndex] = { newHomeId: c1.awayTeamId, newAwayId: c2.awayTeamId };
   }
 
-  const changedMatches = state.matches.map((match) => {
-    if (match.stage !== stage || match.isExtra || match.played) return match;
-    const replacement = swapMap.get(match.koIndex);
-    if (!replacement) return match;
-    const isLeg2 = match.leg === 2;
-    return {
-      ...match,
-      homeTeamId: isLeg2 ? replacement.newAwayId : replacement.newHomeId,
-      awayTeamId: isLeg2 ? replacement.newHomeId : replacement.newAwayId,
-      manuallyOverridden: true,
-    };
+  const newMatches = state.matches.map((m) => {
+    if (m.stage !== firstStage || m.isExtra) return m;
+    if (m.played) return m;
+    const swap = swapMap[m.koIndex];
+    if (!swap) return m;
+    return { ...m, homeTeamId: swap.newHomeId, awayTeamId: swap.newAwayId };
   });
-
-  /* Limpa/recalcula apenas os slots posteriores ainda não jogados. */
-  const { matches: propagatedMatches } = propagateKnockoutWinners(changedMatches);
-  return { matches: propagatedMatches, swappedPairs: swapPairs, stage };
+  /* Propaga os vencedores nos stages seguintes (limpa, já que a base mudou) */
+  const propagated = propagateKnockoutWinners(newMatches);
+  return { matches: propagated, swappedPairs };
 }
 
 /* ============================================================
