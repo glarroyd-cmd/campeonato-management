@@ -43,6 +43,33 @@ function generateCode() {
   return code;
 }
 
+
+function normalizeTournamentState(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  /* Compatibilidade com torneios mata-mata de 64 times salvos por builds anteriores.
+     Se o formatId não for reconhecido mas o estado claramente tiver 64 koTeams,
+     preservamos o torneio como ko64 em vez de cair silenciosamente no wc2026. */
+  let formatId = raw.formatId;
+  const knownFormat = FORMATS.some((f) => f.id === formatId);
+  if (!knownFormat && Array.isArray(raw.koTeams) && raw.koTeams.length === 64 && !raw.groups) {
+    formatId = 'ko64';
+  }
+
+  const base = makeInitialState(formatId || 'wc2026');
+  return {
+    ...base,
+    ...raw,
+    formatId: formatId || base.formatId,
+    rules: { ...base.rules, ...(raw.rules || {}) },
+    matches: Array.isArray(raw.matches) ? raw.matches : [],
+    teamRosters: raw.teamRosters && typeof raw.teamRosters === 'object' ? raw.teamRosters : {},
+    playerPositions: raw.playerPositions && typeof raw.playerPositions === 'object' ? raw.playerPositions : {},
+    groups: Array.isArray(raw.groups) ? raw.groups : base.groups,
+    koTeams: Array.isArray(raw.koTeams) ? raw.koTeams : base.koTeams,
+  };
+}
+
 async function loadTournament(code) {
   const { data, error } = await supabase
     .from('tournaments')
@@ -50,7 +77,7 @@ async function loadTournament(code) {
     .eq('code', code)
     .maybeSingle();
   if (error) { console.error(error); return null; }
-  return data ? data.state : null;
+  return data ? normalizeTournamentState(data.state) : null;
 }
 
 async function loadTournamentList(codes) {
@@ -60,7 +87,7 @@ async function loadTournamentList(codes) {
     .select('code, state, updated_at')
     .in('code', codes);
   if (error) { console.error(error); return []; }
-  return data || [];
+  return (data || []).map((row) => ({ ...row, state: normalizeTournamentState(row.state) || row.state }));
 }
 
 async function createTournamentRow(name, formatId) {
@@ -193,23 +220,17 @@ export default function App() {
       else if (!loaded.teamsComplete) setView('teamsSetup');
       else setView('groups');
       setLoading(false);
-      /* Reparo automático: se detectar duplicatas no bracket, corrige silenciosamente */
-      const repaired = repairKnockoutBracket(loaded);
-      if (repaired.cleared > 0) {
-        console.warn(`[Reparo automático] Removi ${repaired.cleared} slot(s) duplicado(s) do mata-mata.`);
-        setState({ ...loaded, matches: repaired.matches });
-      }
-
       channel = supabase
         .channel(`tournament-${code}`)
         .on(
           'postgres_changes',
           { event: 'UPDATE', schema: 'public', table: 'tournaments', filter: `code=eq.${code}` },
           (payload) => {
-            const newState = payload.new?.state;
-            if (!newState) return;
-            if (newState._meta && newState._meta.lastUpdater === clientId) return;
-            setState(newState);
+            const incomingState = payload.new?.state;
+            if (!incomingState) return;
+            if (incomingState._meta && incomingState._meta.lastUpdater === clientId) return;
+            const newState = normalizeTournamentState(incomingState);
+            if (newState) setState(newState);
           }
         )
         .subscribe();
@@ -2861,7 +2882,7 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
 
   /* Stages do bracket principal (exclui third lugar, mostra separado) */
   const allStages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
-  const stageOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
+  const stageOrder = ['r64', 'r32', 'r16', 'qf', 'sf', 'final'];
   const mainStages = allStages.filter((s) => s !== 'third').sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
   const hasThird = allStages.includes('third');
 
