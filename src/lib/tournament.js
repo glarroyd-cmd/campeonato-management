@@ -153,6 +153,16 @@ export const FORMATS = [
     initialKoTeams: makeGenericKnockoutTeams(32),
   },
   {
+    id: 'ko64',
+    name: 'Mata-mata direto (64)',
+    description: '64 times, rodada de 64 → final.',
+    teams: 64,
+    hasGroups: false,
+    knockoutStages: ['r64', 'r32', 'r16', 'qf', 'sf', 'final'],
+    hasThirdPlace: true,
+    initialKoTeams: makeGenericKnockoutTeams(64),
+  },
+  {
     id: 'ko16',
     name: 'Mata-mata direto (16)',
     description: '16 times, sem fase de grupos.',
@@ -179,6 +189,7 @@ export function getFormat(id) {
 }
 
 export const STAGE_LABELS = {
+  r64: 'Rodada de 64',
   r32: 'Rodada de 32',
   r16: 'Oitavas',
   qf: 'Quartas',
@@ -190,7 +201,7 @@ export const STAGE_LABELS = {
 export const STAGE_ORDER_INDEX = {
   'group-1': 1, 'group-2': 2, 'group-3': 3,
   'group-4': 1.5, 'group-5': 2.5, 'group-6': 3.5, // ida e volta
-  r32: 4, r16: 5, qf: 6, sf: 7, third: 8, final: 8,
+  r64: 3.5, r32: 4, r16: 5, qf: 6, sf: 7, third: 8, final: 8,
 };
 
 export function matchStageKey(m) {
@@ -654,7 +665,7 @@ function getFirstKnockoutPattern(format) {
 function getKnockoutChain(format) {
   const stages = format.knockoutStages;
   const counts = {
-    r32: 16, r16: 8, qf: 4, sf: 2, final: 1, third: 1,
+    r64: 32, r32: 16, r16: 8, qf: 4, sf: 2, final: 1, third: 1,
   };
   return stages.map((s) => ({ stage: s, count: counts[s] }));
 }
