@@ -18,7 +18,6 @@ import {
   computeGroupStanding, getPlayerCardStatus, propagateKnockoutWinners,
   autoFillSameOwnerGroupMatches, getMatchOutcome, recalcKnockoutSeeding,
   repairKnockoutBracket, regenerateKnockoutBracket,
-  canChangeKnockoutReturn, reconfigureKnockoutReturn,
   getAllTeams, getTeamById, computePlayerStats, computeTeamStats, computeOwnerStats,
   computeBestThirds, getPlayerPosition,
   computeHeadToHead, getUpcomingMatches, getNotablePlayersForTeam,
@@ -30,7 +29,7 @@ import {
   computeGroupTeamsOverview, computeAllSuspended,
   computeTeamMetrics, computeGoalkeeperRankings,
   computeTeamDetail, computeTeamRankings, getAllRoundKeys, computeBestXIForRound,
-  reshuffleSameOwnerKnockout,
+  reshuffleSameOwnerKnockout, reshuffleAllKnockoutConfronts,
   isTournamentFinished, getChampion, tournamentProgress, matchStageKey,
 } from './lib/tournament.js';
 
@@ -848,7 +847,7 @@ function RulesSetupView({ state, update, code, onLeave }) {
   return (
     <WizardShell step={2} totalSteps={3} code={code} onLeave={onLeave}
       title="Defina as regras"
-      subtitle={`Formato: ${format.name}. As regras ficam trancadas depois que o torneio começar, exceto ida/volta a partir das oitavas, que pode mudar até as oitavas começarem.`}
+      subtitle={`Formato: ${format.name}. As regras ficam trancadas depois que o torneio começar.`}
     >
       <div className="space-y-4">
         {format.hasGroups && (
@@ -857,7 +856,7 @@ function RulesSetupView({ state, update, code, onLeave }) {
           </RuleCard>
         )}
         <RuleCard icon={<Trophy className="w-4 h-4" />} title="Mata-mata">
-          <ToggleRow label="Ida e volta a partir das oitavas" desc="Rodadas anteriores às oitavas continuam em jogo único. Nas oitavas em diante, o confronto é decidido pelo placar agregado." checked={!!rules.knockoutReturn} onChange={(v) => setRule('knockoutReturn', v)} />
+          <ToggleRow label="Ida e volta no mata-mata" desc="Decidido por placar agregado." checked={!!rules.knockoutReturn} onChange={(v) => setRule('knockoutReturn', v)} />
           {format.hasGroups && (
             <RadioRow label="Sorteio do mata-mata" value={rules.drawMode || 'fifa'} onChange={(v) => setRule('drawMode', v)} options={[
               { v: 'fifa',   label: 'Chave fixa (padrão FIFA)', desc: 'Como na Copa: 1º de cada grupo enfrenta um 3º colocado / 2º cruzado, conforme padrão oficial.' },
@@ -904,15 +903,10 @@ function RuleCard({ icon, title, children }) {
   );
 }
 
-function ToggleRow({ label, desc, checked, onChange, disabled = false }) {
+function ToggleRow({ label, desc, checked, onChange }) {
   return (
-    <label className={cls('flex items-start gap-3', disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => !disabled && onChange(!checked)}
-        className={cls('mt-0.5 relative w-10 h-6 rounded-full transition-colors flex-shrink-0 disabled:cursor-not-allowed', checked ? 'bg-lime-400' : 'bg-slate-700')}
-      >
+    <label className="flex items-start gap-3 cursor-pointer">
+      <button type="button" onClick={() => onChange(!checked)} className={cls('mt-0.5 relative w-10 h-6 rounded-full transition-colors flex-shrink-0', checked ? 'bg-lime-400' : 'bg-slate-700')}>
         <span className={cls('absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform', checked ? 'translate-x-[1.125rem]' : 'translate-x-0.5')} />
       </button>
       <div className="text-sm">
@@ -2775,15 +2769,6 @@ function fileToBase64(file) {
 function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
   const format = getFormat(state.formatId);
   const koMatches = state.matches.filter((m) => m.stage !== 'group');
-  const hasR16 = format.knockoutStages?.includes('r16');
-  const returnToggleUnlocked = hasR16 && canChangeKnockoutReturn(state);
-
-  const handleKnockoutReturnToggle = useCallback((enabled) => {
-    const result = reconfigureKnockoutReturn(state, enabled);
-    if (result.locked || !result.changed) return;
-    update({ rules: result.rules });
-    updateMatches(result.matches);
-  }, [state, update, updateMatches]);
 
   /* Se de algum jeito não tem KO gerado, gera agora */
   if (koMatches.length === 0) {
@@ -2813,29 +2798,6 @@ function KnockoutView({ state, update, updateMatches, allTeams, openMatch }) {
 
   return (
     <div className="space-y-4">
-      {hasR16 && (
-        <Card className="p-4">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold uppercase tracking-wider text-lime-400 mb-2 flex items-center gap-2">
-                <Settings2 className="w-4 h-4" /> Formato a partir das oitavas
-              </div>
-              <ToggleRow
-                label="Ida e volta a partir das oitavas"
-                desc={returnToggleUnlocked
-                  ? 'Pode ser alterado até a primeira partida das oitavas ser registrada. Rodadas anteriores continuam em jogo único.'
-                  : 'Bloqueado porque as oitavas já começaram.'}
-                checked={!!state.rules?.knockoutReturn}
-                onChange={handleKnockoutReturnToggle}
-                disabled={!returnToggleUnlocked}
-              />
-            </div>
-            {!returnToggleUnlocked && (
-              <Pill color="slate"><Clock className="w-3 h-3" /> Bloqueado</Pill>
-            )}
-          </div>
-        </Card>
-      )}
       {groupsInProgress && (
         <div className="bg-amber-900/20 border border-amber-800/50 text-amber-200 text-xs rounded-lg p-3 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -2899,7 +2861,7 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
 
   /* Stages do bracket principal (exclui third lugar, mostra separado) */
   const allStages = [...new Set(koMatches.filter((m) => !m.isExtra).map((m) => m.stage))];
-  const stageOrder = ['r64', 'r32', 'r16', 'qf', 'sf', 'final'];
+  const stageOrder = ['r32', 'r16', 'qf', 'sf', 'final'];
   const mainStages = allStages.filter((s) => s !== 'third').sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
   const hasThird = allStages.includes('third');
 
@@ -2943,6 +2905,19 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
     }
   }, [state, updateMatches]);
 
+  const canShuffleAllConfronts = useMemo(() => {
+    const firstStage = mainStages[0];
+    if (!firstStage) return false;
+    const stageMatches = koMatches.filter((m) => m.stage === firstStage && !m.isExtra);
+    return stageMatches.length > 0 && stageMatches.every((m) => !m.played && m.homeTeamId && m.awayTeamId);
+  }, [mainStages, koMatches]);
+
+  const handleReshuffleAllConfronts = useCallback(() => {
+    if (!window.confirm('Sortear novamente todos os confrontos desta fase? O sorteio vai tentar manter confrontos entre donos diferentes sempre que houver uma combinação válida.')) return;
+    const result = reshuffleAllKnockoutConfronts(state);
+    if (result.shuffled) updateMatches(result.matches);
+  }, [state, updateMatches]);
+
   const handleRegenerateBracket = useCallback(() => {
     const anyKoPlayed = state.matches.some((m) => m.stage !== 'group' && m.played);
     const msg = anyKoPlayed
@@ -2979,6 +2954,24 @@ function KnockoutBracket({ state, koMatches, updateMatches, openMatch }) {
 
   return (
     <div className="space-y-4">
+      {!swapTeam && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleReshuffleAllConfronts}
+            disabled={!canShuffleAllConfronts}
+            title={canShuffleAllConfronts ? 'Embaralha todos os confrontos da primeira fase do mata-mata' : 'Disponível apenas antes do primeiro jogo desta fase'}
+            className={`text-xs font-bold uppercase tracking-wider px-3 py-2 rounded transition flex items-center gap-1.5 ${canShuffleAllConfronts
+              ? 'bg-lime-500 text-slate-950 hover:bg-lime-400'
+              : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+          >
+            <Shuffle className="w-3.5 h-3.5" /> Sortear todos os confrontos
+          </button>
+          <span className="text-[11px] text-slate-500">
+            Reembaralha todos os pares e prioriza adversários de donos diferentes.
+          </span>
+        </div>
+      )}
+
       {/* Botão de sortear same-owner — só aparece quando há pares pra trocar */}
       {sameOwnerConfronts.swappable > 0 && !swapTeam && (
         <div className="flex items-center justify-between gap-3 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg text-sm">
@@ -3469,7 +3462,7 @@ function ChampionPathCard({ state, championPath }) {
 
 /* ========== Power Ranking — Times ========== */
 function PowerRankingTeamsList({ rows, state, openTeam, maxHeight = '440px' }) {
-  const stageName = { 0: '—', 0.5: 'R64', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
+  const stageName = { 0: '—', 1: 'R32', 2: 'R16', 3: 'QF', 4: 'SF', 4.5: '3º', 5: 'Final' };
   return (
     <div className="overflow-y-auto pr-1" style={{ maxHeight }}>
       <div className="space-y-1">
